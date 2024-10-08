@@ -23,25 +23,49 @@ class DetNuscEvaluator():
         'attr_err': 'mAAE',
     }
 
+    # DefaultAttribute = {
+    #     'car': 'vehicle.parked',
+    #     'pedestrian': 'pedestrian.moving',
+    #     'trailer': 'vehicle.parked',
+    #     'truck': 'vehicle.parked',
+    #     'bus': 'vehicle.moving',
+    #     'motorcycle': 'cycle.without_rider',
+    #     'construction_vehicle': 'vehicle.parked',
+    #     'bicycle': 'cycle.without_rider',
+    #     'barrier': '',
+    #     'traffic_cone': '',
+    #     'traffic cones': '',
+    #     'pillar':'',
+    #     'rider':'',
+    #     'motorbike':'',
+    #     'autonomer_mobile_robot':''
+    # }
+    
     DefaultAttribute = {
-        'car': 'vehicle.parked',
-        'pedestrian': 'pedestrian.moving',
-        'trailer': 'vehicle.parked',
-        'truck': 'vehicle.parked',
-        'bus': 'vehicle.moving',
-        'motorcycle': 'cycle.without_rider',
-        'construction_vehicle': 'vehicle.parked',
-        'bicycle': 'cycle.without_rider',
-        'barrier': '',
-        'traffic_cone': '',
+        'CAR': 'vehicle.moving',
+        'VAN': 'vehicle.moving',
+        'PEDESTRIAN': 'pedestrian.moving',
+        'TRUCK': 'vehicle.moving',
+        'BUS': 'vehicle.moving',
+        'ULTRA_VEHICLE': 'vehicle.moving',
+        'CYCLIST':'',
+        'TRICYCLIST':'',
+        'ANIMAL':'',
+        'UNKNOWN_MOVABLE':'',
+        'ROAD_FENCE':'',
+        'TRAFFICCONE':'',
+        'WATER_FILED_BARRIER':'',
+        'LIFTING_LEVERS':'',
+        'PILLAR':'',
+        'OTHER_BLOCKS':'',
     }
 
     def __init__(
         self,
         class_names,
         eval_version='detection_cvpr_2019',
-        data_root='./data/nuScenes',
-        version='v1.0-trainval',
+        data_root='/defaultShare/tmpnfs/dataset/zm_radar/jt_dataset/nuScenes_mini',
+        version='v1.0-mini',
         modality=dict(use_lidar=False,
                       use_camera=True,
                       use_radar=True,
@@ -89,7 +113,7 @@ class DetNuscEvaluator():
                         dataroot=self.data_root,
                         verbose=False)
         eval_set_map = {
-            'v1.0-mini': 'mini_val',
+            'v1.0-mini': 'mini_train',
             'v1.0-trainval': 'val',
         }
         nusc_eval = NuScenesEval(nusc,
@@ -260,7 +284,10 @@ class DetNuscEvaluator():
                 wlh = box[[4, 3, 5]]
                 box_yaw = box[6]
                 box_vel = box[7:].tolist()
-                box_vel.append(0)
+                if len(box_vel) != 0:
+                    box_vel.append(0)  
+                else:
+                    box_vel = [0.0, 0.0, 0.0]
                 quat = pyquaternion.Quaternion(axis=[0, 0, 1], radians=box_yaw)
                 nusc_box = Box(center, wlh, quat, velocity=box_vel)
                 nusc_box.rotate(rot)
@@ -268,21 +295,23 @@ class DetNuscEvaluator():
                 if np.sqrt(nusc_box.velocity[0]**2 +
                            nusc_box.velocity[1]**2) > 0.2:
                     if name in [
-                            'car',
-                            'construction_vehicle',
-                            'bus',
-                            'truck',
-                            'trailer',
+                            'CAR',
+                            'VAN',
+                            'TRUCK',
+                            'BUS',
+                            'ULTRA_VEHICLE',
+                            # 'trailer',
                     ]:
                         attr = 'vehicle.moving'
-                    elif name in ['bicycle', 'motorcycle']:
+                    # elif name in ['bicycle', 'motorcycle']:
+                    elif name in ['CYCLIST', 'TRICYCLIST']:
                         attr = 'cycle.with_rider'
                     else:
                         attr = self.DefaultAttribute[name]
                 else:
-                    if name in ['pedestrian']:
+                    if name in ['PEDESTRIAN']:
                         attr = 'pedestrian.standing'
-                    elif name in ['bus']:
+                    elif name in ['BUS']:
                         attr = 'vehicle.stopped'
                     else:
                         attr = self.DefaultAttribute[name]

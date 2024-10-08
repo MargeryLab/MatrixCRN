@@ -55,9 +55,11 @@ def map_pointcloud_to_image(
     return points, coloring
 
 
-data_root = 'data/nuScenes'
-INFO_PATHS = ['data/nuScenes/nuscenes_infos_train.pkl',
-              'data/nuScenes/nuscenes_infos_val.pkl']
+data_root = '/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_fmt_with_labels/24-09-20_00-00-01_000_test/'
+# data_root = '/defaultShare/tmpnfs/dataset/nuscenes'
+INFO_PATHS = ['/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_fmt_with_labels/24-09-20_00-00-01_000_test/nuscenes_infos_train.pkl',
+              '/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_fmt_with_labels/24-09-20_00-00-01_000_test/nuscenes_infos_val.pkl']
+# INFO_PATHS = ['/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_gen/24-09-04_2/nuscenes_infos_test.pkl']
 
 lidar_key = 'LIDAR_TOP'
 cam_keys = [
@@ -108,6 +110,7 @@ if __name__ == '__main__':
     mmcv.mkdir_or_exist(os.path.join(data_root, 'depth_gt'))
     for info_path in INFO_PATHS:
         infos = mmcv.load(info_path)
+        assert len(infos) != 0
         for info in infos:
             po.apply_async(func=worker, args=(info, ))
     po.close()

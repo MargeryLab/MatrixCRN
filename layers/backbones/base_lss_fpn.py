@@ -321,10 +321,10 @@ class BaseLSSFPN(nn.Module):
         # make grid in image plane
         ogfH, ogfW = self.final_dim
         fH, fW = ogfH // self.downsample_factor, ogfW // self.downsample_factor
-        d_coords = torch.arange(*self.d_bound,
+        d_coords = torch.arange(*self.d_bound, # self.d_bound=[2.0, 58.0, 0.8],0.8为步长
                                 dtype=torch.float).view(-1, 1,
                                                         1).expand(-1, fH, fW)
-        D, _, _ = d_coords.shape
+        D, _, _ = d_coords.shape # D=70=(58-2)/0.8
         x_coords = torch.linspace(0, ogfW - 1, fW, dtype=torch.float).view(
             1, 1, fW).expand(D, fH, fW)
         y_coords = torch.linspace(0, ogfH - 1, fH,
@@ -334,7 +334,7 @@ class BaseLSSFPN(nn.Module):
 
         # D x H x W x 3
         frustum = torch.stack((x_coords, y_coords, d_coords, paddings), -1)
-        return frustum
+        return frustum #(70,16,44,4)
 
     def get_geometry(self, sensor2ego_mat, intrin_mat, ida_mat, bda_mat):
         """Transfer points from camera coord to ego coord.
@@ -379,7 +379,7 @@ class BaseLSSFPN(nn.Module):
 
         imgs = imgs.flatten().view(batch_size * num_sweeps * num_cams,
                                    num_channels, imH, imW)
-        img_feats = self.img_neck(self.img_backbone(imgs))[0]
+        img_feats = self.img_neck(self.img_backbone(imgs))[0] #length=1, (6,512,16,44)
         img_feats = img_feats.reshape(batch_size, num_sweeps, num_cams,
                                       img_feats.shape[1], img_feats.shape[2],
                                       img_feats.shape[3])
@@ -552,7 +552,7 @@ class BaseLSSFPN(nn.Module):
         ret_feature_list = [key_frame_feature]
         for sweep_index in range(1, num_sweeps):
             with torch.no_grad():
-                feature_map = self._forward_single_sweep(
+                feature_map = self._forward_single_sweep( #(2,80,128,128)
                     sweep_index,
                     sweep_imgs[:, sweep_index:sweep_index + 1, ...],
                     mats_dict,

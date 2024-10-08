@@ -205,6 +205,8 @@ docs/api
 .code-workspace.code-workspace
 output
 outputs
+outputs_zongmu
+data
 instant_test_output
 inference_test_output
 *.pkl

@@ -4,69 +4,29 @@ import torch
 import mmcv
 import numpy as np
 from PIL import Image
+from functools import reduce
 from pyquaternion import Quaternion
 
+from nuscenes.nuscenes import NuScenes
 from mmdet3d.core.bbox.structures.lidar_box3d import LiDARInstance3DBoxes
 from nuscenes.utils.data_classes import Box
+from nuscenes.utils.data_classes import RadarPointCloud
+from nuscenes.utils.geometry_utils import transform_matrix
 from torch.utils.data import Dataset
 
 __all__ = ['NuscDatasetRadarDet']
 
-# map_name_from_general_to_detection = {
-#     'human.pedestrian.adult': 'pedestrian',
-#     'human.pedestrian.child': 'pedestrian',
-#     'human.pedestrian.wheelchair': 'ignore',
-#     'human.pedestrian.stroller': 'ignore',
-#     'human.pedestrian.personal_mobility': 'ignore',
-#     'human.pedestrian.police_officer': 'pedestrian',
-#     'human.pedestrian.construction_worker': 'pedestrian',
-#     'animal': 'ignore',
-#     'vehicle.car': 'car',
-#     'vehicle.motorcycle': 'motorcycle',
-#     'vehicle.bicycle': 'bicycle',
-#     'vehicle.bus.bendy': 'bus',
-#     'vehicle.bus.rigid': 'bus',
-#     'vehicle.truck': 'truck',
-#     'vehicle.construction': 'construction_vehicle',
-#     'vehicle.emergency.ambulance': 'ignore',
-#     'vehicle.emergency.police': 'ignore',
-#     'vehicle.trailer': 'trailer',
-#     'movable_object.barrier': 'barrier',
-#     'movable_object.trafficcone': 'traffic_cone',
-#     'movable_object.pushable_pullable': 'ignore',
-#     'movable_object.debris': 'ignore',
-#     'static_object.bicycle_rack': 'ignore',
-# }
-
-# map_name_from_general_to_detection = {
-#     'Car': 'car',
-#     'Pillar': 'pillar',
-#     'Pedestrian': 'pedestrian',
-#     'Truck': 'truck',
-#     'Bus': 'bus',
-#     'Motorbike': 'motorbike',
-#     'Rider': 'rider',
-#     'Traffic_cones': 'traffic cones',
-#     'Autonomer_Mobile_Robot': 'autonomer_mobile_robot'
-# }
-
+SAVE_FIELDS = [0, 1, 2, 8, 9]
 map_name_from_general_to_detection = {
-    'CAR': 'CAR',
-    'VAN': 'VAN',
-    'TRUCK': 'TRUCK',
-    'BUS': 'BUS',
-    'ULTRA_VEHICLE': 'ULTRA_VEHICLE',
-    'CYCLIST': 'CYCLIST',
-    'TRICYCLIST': 'TRICYCLIST',
-    'PEDESTRIAN': 'PEDESTRIAN',
-    'ANIMAL': 'ANIMAL',
-    'UNKNOWN_MOVABLE': 'UNKNOWN_MOVABLE',
-    'ROAD_FENCE': 'ROAD_FENCE',
-    'TRAFFIC_CONE': 'TRAFFIC_CONE',
-    'WATER_FILED_BARRIER': 'WATER_FILED_BARRIER',
-    'LIFTING_LEVERS': 'LIFTING_LEVERS',
-    'PILLAR': 'PILLAR',
-    'OTHER_BLOCKS': 'OTHER_BLOCKS'
+    'Car': 'car',
+    'Pillar': 'pillar',
+    'Pedestrian': 'pedestrian',
+    'Truck': 'truck',
+    'Bus': 'bus',
+    'Motorbike': 'motorbike',
+    'Rider': 'rider',
+    'Traffic_cones': 'traffic cones',
+    'Autonomer_Mobile_Robot': 'autonomer_mobile_robot'
 }
 
 
@@ -75,7 +35,6 @@ def get_rot(h):
         [np.cos(h), np.sin(h)],
         [-np.sin(h), np.cos(h)],
     ])
-
 
 def img_transform(img, resize, resize_dims, crop, flip, rotate):
     ida_rot = torch.eye(2)
@@ -217,6 +176,7 @@ class NuscDatasetRadarDet(Dataset):
 
         self.remove_z_axis = remove_z_axis
         self.gt_for_radar_only = gt_for_radar_only
+        self.nusc = NuScenes(version='v1.0-trainval', dataroot=data_root, verbose=True)
 
         assert sum([sweep_idx >= 0 for sweep_idx in sweep_idxes]) \
             == len(sweep_idxes), 'All `sweep_idxes` must greater \
@@ -290,7 +250,7 @@ class NuscDatasetRadarDet(Dataset):
             crop = (crop_w, crop_h, crop_w + fW, crop_h + fH)
 
         return resize, resize_dims, crop     
-
+    
     def sample_ida_augmentation(self):
         """Generate ida augmentation values based on ida_config."""
         H, W = self.ida_aug_conf['H'], self.ida_aug_conf['W']
@@ -340,8 +300,8 @@ class NuscDatasetRadarDet(Dataset):
     def sample_radar_augmentation(self):
         """Generate bda augmentation values based on bda_config."""
         if self.is_train:
-            radar_idx = np.random.choice(self.rda_aug_conf['N_sweeps'],
-                                         self.rda_aug_conf['N_use'],
+            radar_idx = [0] + np.random.choice(range(1, self.rda_aug_conf['N_sweeps']),
+                                         self.rda_aug_conf['N_use'] - 1,
                                          replace=False)
         else:
             radar_idx = np.arange(self.rda_aug_conf['N_sweeps'])
@@ -461,7 +421,55 @@ class NuscDatasetRadarDet(Dataset):
 
         return torch.Tensor(depth_map)
 
-    def get_image(self, cam_infos, cams):
+    def get_radar_sweeps_pts(self, single_frame_radar_infos, radar_idx, use_radar_filters=False, min_distance=2.2):
+        sample_rec = single_frame_radar_infos[0]
+        points = np.zeros((6, 0))  # 18/5 plus one for time
+        
+        # Get reference pose and timestamp.
+        ref_sd_token = sample_rec['RADAR_FRONT']
+        ref_pose_rec = ref_sd_token['ego_pose']
+        ref_time = 1e-6 * ref_sd_token['timestamp']
+        
+        # Homogeneous transformation matrix from global to _current_ ego car frame.
+        car_from_global = transform_matrix(ref_pose_rec['translation'], Quaternion(ref_pose_rec['rotation']), inverse=True)
+        
+        if use_radar_filters:
+            RadarPointCloud.default_filters()
+        else:
+            RadarPointCloud.disable_filters()
+        
+        # Aggregate current and previous sweeps.
+        radar_chan_list = ["RADAR_BACK_RIGHT", "RADAR_BACK_LEFT", "RADAR_FRONT", "RADAR_FRONT_LEFT", "RADAR_FRONT_RIGHT"]
+        for idx in radar_idx:
+            assert idx < len(single_frame_radar_infos)
+            sweep = single_frame_radar_infos[idx]
+            for radar_chan in radar_chan_list:
+                radar_data = sweep[radar_chan]
+                cs_record = radar_data['calibrated_sensor']
+                pose_record = radar_data['ego_pose']
+                pc = RadarPointCloud.from_file(os.path.join(self.data_root, radar_data['filename']))
+                pc.remove_close(min_distance)
+                
+                # Transform radar points from sensor to ego vehicle frame.
+                cs_record_trans = transform_matrix(cs_record['translation'], Quaternion(cs_record['rotation']), inverse=False)
+                
+                # Transform radar points from ego vehicle frame to global frame.
+                global_from_car = transform_matrix(pose_record['translation'], Quaternion(pose_record['rotation']), inverse=False)
+                
+                # Transform radar points from global frame to reference ego vehicle frame.
+                # Fuse four transformation matrices into one and perform transform.
+                trans_matrix = reduce(np.dot, [car_from_global, global_from_car, cs_record_trans])
+                pc.transform(trans_matrix)
+                
+                # Add time information
+                time_diff = (ref_time - 1e-6 * radar_data['timestamp']) * np.ones((1, pc.nbr_points()))
+                filtered_points = pc.points[SAVE_FIELDS, :]
+                new_points = np.concatenate((filtered_points, time_diff), 0)
+                points = np.concatenate((points, new_points), 1)
+        
+        return points
+    
+    def get_image(self, cam_infos, radar_infos, cams):
         """Given data and cam_names, return image data needed.
 
         Args:
@@ -485,17 +493,17 @@ class NuscDatasetRadarDet(Dataset):
         sweep_ida_mats = list()
         sweep_sensor2sensor_mats = list()
         sweep_timestamps = list()
-        sweep_gt_depths = list()
         sweep_radar_points = list()
-        for cam in cams:
+        V = 700 * 5  # if nsweeps = 5 -> V=3500
+        for sensor_idx, cam in enumerate(cams):
             imgs = list()
             sensor2ego_mats = list()
             intrin_mats = list()
             ida_mats = list()
             sensor2sensor_mats = list()
             timestamps = list()
-            gt_depths = list()
-            radar_points = list()
+            if sensor_idx < len(radar_infos[0][0]):
+                radar_points = list()
             key_info = cam_infos[0]
             resize, resize_dims, crop, flip, \
                 rotate_ida = self.sample_ida_augmentation()
@@ -562,28 +570,6 @@ class NuscDatasetRadarDet(Dataset):
                 intrin_mat[:3, :3] = torch.Tensor(
                     cam_info[cam]['calibrated_sensor']['camera_intrinsic'])
 
-                file_name = os.path.split(cam_info[cam]['filename'])[-1]
-                if self.return_depth:
-                    point_depth = np.fromfile(os.path.join(
-                        self.data_root, self.depth_path, f'{file_name}.bin'),
-                                              dtype=np.float32,
-                                              count=-1)
-                    point_depth = point_depth.reshape(-1, 3)
-                    point_depth_augmented = self.depth_transform(
-                        point_depth, resize, self.ida_aug_conf['final_dim'],
-                        crop, flip, rotate_ida)
-                    gt_depths.append(point_depth_augmented)
-
-                if self.return_radar_pv:
-                    radar_point = np.fromfile(os.path.join(
-                        self.data_root, self.radar_pv_path, f'{file_name}.bin'),
-                        dtype=np.float32,
-                        count=-1).reshape(-1, self.radar_pts_dim)
-                    radar_point_augmented = self.transform_radar_pv(
-                        radar_point, resize, self.ida_aug_conf['final_dim'],
-                        crop, flip, rotate_ida, radar_idx)
-                    radar_points.append(radar_point_augmented)
-
                 raw_w, raw_h = img.size
                 if (raw_w, raw_h) != (self.ida_aug_conf['W'], self.ida_aug_conf['H']):
                     resize, resize_dims, crop = self.resample_ida_augmentation(raw_w, raw_h)
@@ -602,15 +588,26 @@ class NuscDatasetRadarDet(Dataset):
                 imgs.append(img)
                 intrin_mats.append(intrin_mat)
                 timestamps.append(cam_info[cam]['timestamp'])
+                if radar_infos and sweep_idx < len(radar_infos) and sensor_idx < len(radar_infos[0][0]):
+                    # get 5 sweeps radar frame randomly
+                    radar_data = self.get_radar_sweeps_pts(radar_infos[sweep_idx], radar_idx) #(6,N)
+                    radar_data = np.transpose(radar_data)
+                    if radar_data.shape[0] > V:
+                        print('radar_data', radar_data.shape)
+                        print('max pts', V)
+                        assert False, "Way more radar returns than expected"
+                        # radar_data = radar_data[:V]  # fix upper bound of number of radar readings
+                    elif radar_data.shape[0] < V:
+                        radar_data = np.pad(radar_data, [(0, V - radar_data.shape[0]), (0, 0)], mode='constant')
+                    # radar_data = np.transpose(radar_data)
+                    radar_points.append(torch.tensor(radar_data, dtype=torch.float32)) #包含四个时序，所有雷达传感器以及sweeps
             sweep_imgs.append(torch.stack(imgs))
             sweep_sensor2ego_mats.append(torch.stack(sensor2ego_mats))
             sweep_intrin_mats.append(torch.stack(intrin_mats))
             sweep_ida_mats.append(torch.stack(ida_mats))
             sweep_sensor2sensor_mats.append(torch.stack(sensor2sensor_mats))
             sweep_timestamps.append(torch.tensor(timestamps))
-            if self.return_depth:
-                sweep_gt_depths.append(torch.stack(gt_depths))
-            if self.return_radar_pv:
+            if sensor_idx < len(radar_infos[0]):
                 sweep_radar_points.append(torch.stack(radar_points))
 
         ret_list = [
@@ -620,15 +617,9 @@ class NuscDatasetRadarDet(Dataset):
             torch.stack(sweep_ida_mats).permute(1, 0, 2, 3),
             torch.stack(sweep_sensor2sensor_mats).permute(1, 0, 2, 3),
             torch.stack(sweep_timestamps).permute(1, 0),
+            torch.stack(sweep_radar_points).permute(1, 0, 2, 3)
         ]
-        if self.return_depth:
-            ret_list.append(torch.stack(sweep_gt_depths).permute(1, 0, 2, 3),)
-        else:
-            ret_list.append(None)
-        if self.return_radar_pv:
-            ret_list.append(torch.stack(sweep_radar_points).permute(1, 0, 2, 3),)
-        else:
-            ret_list.append(None)
+
         return ret_list
 
     def get_image_meta(self, cam_infos, cams):
@@ -778,7 +769,9 @@ class NuscDatasetRadarDet(Dataset):
         if self.use_cbgs:
             idx = self.sample_indices[idx]
         cam_infos = list()
+        pts_infos = list()
         cams = self.choose_cams()
+        info = self.infos[idx]
         for key_idx in self.key_idxes:
             cur_idx = key_idx + idx
             # Handle scenarios when current idx doesn't have previous key
@@ -787,6 +780,7 @@ class NuscDatasetRadarDet(Dataset):
                 cur_idx += 1
             info = self.infos[cur_idx]
             cam_infos.append(info['cam_infos'])
+            pts_infos.append([info['radar_infos']] + info['radar_sweeps'])
             for sweep_idx in self.sweeps_idx:
                 if len(info['cam_sweeps']) == 0:
                     cam_infos.append(info['cam_infos'])
@@ -799,25 +793,18 @@ class NuscDatasetRadarDet(Dataset):
                             cam_infos.append(info['cam_sweeps'][i])
                             break
 
-        if self.return_image or self.return_depth or self.return_radar_pv:
-            image_data_list = self.get_image(cam_infos, cams)
-            (
-                sweep_imgs,
-                sweep_sensor2ego_mats,
-                sweep_intrins,
-                sweep_ida_mats,
-                sweep_sensor2sensor_mats,
-                sweep_timestamps,
-            ) = image_data_list[:6]
-        else:
-            (
-                sweep_imgs,
-                sweep_intrins,
-                sweep_ida_mats,
-                sweep_sensor2sensor_mats,
-                sweep_timestamps,
-            ) = None, None, None, None, None
-            sweep_sensor2ego_mats = self.get_image_sensor2ego_mats(cam_infos, cams)
+        image_data_list = self.get_image(cam_infos, pts_infos, cams)
+        (
+            sweep_imgs,
+            sweep_sensor2ego_mats,
+            sweep_intrins,
+            sweep_ida_mats,
+            sweep_sensor2sensor_mats,
+            sweep_timestamps,
+            sweep_radar_points,
+        ) = image_data_list[:7]
+        # sample_rec = self.nusc.get('sample', info['token'])
+        # radar_data = self.get_radar_data(sample_rec, self.num_sweeps)
 
         img_metas = self.get_image_meta(cam_infos, cams)
         img_metas['token'] = self.infos[idx]['sample_token']
@@ -841,16 +828,8 @@ class NuscDatasetRadarDet(Dataset):
             img_metas,
             gt_boxes_3d,
             gt_labels_3d,
+            sweep_radar_points,
         ]
-
-        if self.return_depth:
-            ret_list.append(image_data_list[6])
-        else:
-            ret_list.append(None)
-        if self.return_radar_pv:
-            ret_list.append(image_data_list[7])
-        else:
-            ret_list.append(None)
 
         return ret_list
 
@@ -880,8 +859,7 @@ def collate_fn(data,
     gt_boxes_3d_batch = list()
     gt_labels_3d_batch = list()
     img_metas_batch = list()
-    depth_labels_batch = list()
-    radar_pv_batch = list()
+    radar_pts_batch = list()
 
     for iter_data in data:
         (
@@ -895,13 +873,9 @@ def collate_fn(data,
             img_metas,
             gt_boxes,
             gt_labels,
-        ) = iter_data[:10]
-        if is_return_depth:
-            gt_depth = iter_data[10]
-            depth_labels_batch.append(gt_depth)
-        if is_return_radar_pv:
-            radar_pv = iter_data[11]
-            radar_pv_batch.append(radar_pv)
+        ) = iter_data[:-1]
+        radar_pts = iter_data[-1]
+        radar_pts_batch.append(radar_pts)
 
         imgs_batch.append(sweep_imgs)
         sensor2ego_mats_batch.append(sweep_sensor2ego_mats)
@@ -937,13 +911,8 @@ def collate_fn(data,
             gt_labels_3d_batch,
             None,
         ]
-    if is_return_depth:
-        ret_list.append(torch.stack(depth_labels_batch))
-    else:
-        ret_list.append(None)
-    if is_return_radar_pv:
-        ret_list.append(torch.stack(radar_pv_batch))
-    else:
-        ret_list.append(None)
+    assert is_return_depth == False
+    ret_list.append(None)
+    ret_list.append(torch.stack(radar_pts_batch))
 
     return ret_list

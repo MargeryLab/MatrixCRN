@@ -9,17 +9,18 @@ from pyquaternion import Quaternion
 from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.data_classes import RadarPointCloud
 from nuscenes.utils.geometry_utils import transform_matrix, view_points
-
+# 解析雷达点，根据相应信息进行过滤并合并sweeps帧点云，同时需要对每一帧数据的属性进行转换或补偿到参考坐标系（lidar）
 
 SPLIT = 'v1.0-trainval'
-DATA_PATH = 'data/nuScenes'
+DATA_PATH = '/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_fmt_with_labels/24-09-20_00-00-01_000_test'
 OUT_PATH = 'radar_bev_filter'
-info_paths = ['data/nuScenes/nuscenes_infos_train.pkl', 'data/nuScenes/nuscenes_infos_val.pkl']
+info_paths = ['/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_fmt_with_labels/24-09-20_00-00-01_000_test/nuscenes_infos_train.pkl', 
+              '/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_fmt_with_labels/24-09-20_00-00-01_000_test/nuscenes_infos_val.pkl']
 
 # SPLIT = 'v1.0-test'
-# DATA_PATH = 'data/nuScenes/v1.0-test'
-# OUT_PATH = 'radar_bev_filter_test'
-# info_paths = ['data/nuScenes/nuscenes_infos_test.pkl']
+# DATA_PATH = '/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_gen/24-09-04_2'
+# OUT_PATH = 'radar_bev_filter'
+# info_paths = ['/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_gen/24-09-04_2/nuscenes_infos_test.pkl']
 
 RADAR_CHAN = ['RADAR_FRONT', 'RADAR_FRONT_LEFT', 'RADAR_FRONT_RIGHT',
               'RADAR_BACK_LEFT', 'RADAR_BACK_RIGHT']
@@ -27,6 +28,8 @@ RADAR_CHAN = ['RADAR_FRONT', 'RADAR_FRONT_LEFT', 'RADAR_FRONT_RIGHT',
 N_SWEEPS = 8
 MIN_DISTANCE = 0.1
 MAX_DISTANCE = 100.
+STATIC_MIN_VEL_THRESH = -0.5
+STATIC_MAX_VEL_THRESH = 0.5
 
 DISABLE_FILTER = False
 DEBUG = False
@@ -37,7 +40,8 @@ if DEBUG:
 # https://github.com/nutonomy/nuscenes-devkit/blob/master/python-sdk/nuscenes/utils/data_classes.py#L315
 # FIELDS: x y z dyn_prop id rcs vx vy vx_comp vy_comp is_quality_valid ambig_state 
 #         x_rms y_rms invalid_state pdh0 vx_rms vy_rms
-SAVE_FIELDS = [0, 1, 2, 5, 8, 9, -1]  # x, y, z, rcs, vx_comp, vy_comp, (dummy field for sweep info)
+# SAVE_FIELDS = [0, 1, 2, 5, 8, 9, -1]  # x, y, z, rcs, vx_comp, vy_comp, (dummy field for sweep info)
+SAVE_FIELDS = [0, 1, 2, 8, 9, -1]
 
 nusc = NuScenes(
     version=SPLIT, dataroot=DATA_PATH, verbose=True)
@@ -55,6 +59,10 @@ else:
 
 
 def worker(info):
+    if DEBUG:
+        debug_vis_path = '/maggie.meng/code/CRN/tmp'
+        if not os.path.exists(debug_vis_path):
+            os.mkdir(debug_vis_path)
     # Init.
     points = np.zeros((18, 0))
     all_pc = RadarPointCloud(points)
@@ -106,10 +114,13 @@ def worker(info):
             velocities = np.dot(Quaternion(current_cs_rec['rotation']).rotation_matrix, velocities)
             velocities = np.dot(Quaternion(ref_cs_rec['rotation']).rotation_matrix.T, velocities)
             current_pc.points[8:10, :] = velocities[0:2, :]
+            velocity_norms = np.linalg.norm(velocities[0:2, :], axis=0)
 
-            # Compensate points on moving object by velocity of point
-            current_pc.points[0, :] += current_pc.points[8, :] * time_lag
-            current_pc.points[1, :] += current_pc.points[9, :] * time_lag
+            # # Compensate points on moving object by velocity of point
+            # mask = (velocity_norms <= STATIC_MIN_VEL_THRESH) | (velocity_norms >= STATIC_MAX_VEL_THRESH)
+            # if np.any(mask):
+            #     current_pc.points[0, mask] += current_pc.points[8, mask] * time_lag
+            #     current_pc.points[1, mask] += current_pc.points[9, mask] * time_lag
 
             # Save sweep index to unused field
             current_pc.points[-1, :] = sweep
@@ -138,10 +149,11 @@ def worker(info):
         fig, ax = plt.subplots(figsize=(12, 12))
         points = all_pc.points[:3, :]
 
-        velocities = all_pc.points[8:11, :]
+        velocities = all_pc.points[8:11, :] #(3,1785)
         velocities[2, :] = np.zeros(all_pc.points.shape[1])
         viewpoint = np.eye(4)
-        points_vel = view_points(all_pc.points[:3, :] + velocities, viewpoint, normalize=False)
+        points_vel = view_points(all_pc.points[:3, :] + velocities, viewpoint, normalize=False) #将速度向量加到点云的坐标上，展示每个点的速度矢量
+        points_vel = points
         deltas_vel = points_vel - points
         deltas_vel = 6 * deltas_vel  # Arbitrary scaling
         max_delta = 20
@@ -154,9 +166,75 @@ def worker(info):
         plt.xlim([-60, 60])
         plt.ylim([-60, 60])
         plt.gca().set_aspect('equal', adjustable='box')
-        plt.show()
+        # plt.show()
+        plt.savefig(os.path.join(debug_vis_path, str(ref_time)+'.jpg'))
 
 
+def worker_zongmu(info):
+    debug_vis_path = '/maggie.meng/code/CRN/tmp'
+    if not os.path.exists(debug_vis_path):
+        os.mkdir(debug_vis_path)
+    # Init.
+    points = np.zeros((18, 0))
+    all_pc = RadarPointCloud(points)
+
+    sample = nusc.get('sample', info['lidar_infos']['LIDAR_TOP']['sample_token'])
+    if DEBUG:
+        lidar = LidarPointCloud.from_file(os.path.join(nusc.dataroot, lidar_data['filename']))
+
+    for chan in RADAR_CHAN:
+        # Aggregate current and previous sweeps.
+        sample_data_token = sample['data'][chan]
+        current_sd_rec = nusc.get('sample_data', sample_data_token)
+        for sweep in range(N_SWEEPS):
+            # Load up the pointcloud and remove points close to the sensor.
+            file_name = os.path.join(nusc.dataroot, current_sd_rec['filename'])
+            current_pc = RadarPointCloud.from_file(file_name, invalid_states, dynprop_states, ambig_states)
+
+            # Save sweep index to unused field
+            current_pc.points[-1, :] = sweep
+
+            # Merge with key pc.
+            all_pc.points = np.hstack((all_pc.points, current_pc.points))
+
+            # Abort if there are no previous sweeps.
+            if current_sd_rec['prev'] == '':
+                break
+            else:
+                current_sd_rec = nusc.get('sample_data', current_sd_rec['prev'])
+
+    points = all_pc.points[SAVE_FIELDS, :].T.astype(np.float32)
+
+    dist = np.linalg.norm(points[:, 0:2], axis=1)
+    mask = np.ones(dist.shape[0], dtype=bool)
+    mask = np.logical_and(mask, dist > MIN_DISTANCE)
+    mask = np.logical_and(mask, dist < MAX_DISTANCE)
+    points = points[mask, :]
+
+    file_name = os.path.split(info['lidar_infos']['LIDAR_TOP']['filename'])[-1]
+    points.tofile(os.path.join(DATA_PATH, OUT_PATH, file_name))
+
+    if DEBUG:
+        fig, ax = plt.subplots(figsize=(12, 12))
+        points = all_pc.points[:3, :]
+        viewpoint = np.eye(4)
+        points_vel = points
+        deltas_vel = points_vel - points
+        deltas_vel = 6 * deltas_vel  # Arbitrary scaling
+        max_delta = 20
+        deltas_vel = np.clip(deltas_vel, -max_delta, max_delta)  # Arbitrary clipping
+        for i in range(points.shape[1]):
+          ax.arrow(points[0, i], points[1, i], deltas_vel[0, i], deltas_vel[1, i])
+
+        ax.scatter(all_pc.points[0, :], all_pc.points[1, :], c='red', s=2)
+        ax.plot(lidar.points[0, :], lidar.points[1, :], ',')
+        plt.xlim([-60, 60])
+        plt.ylim([-60, 60])
+        plt.gca().set_aspect('equal', adjustable='box')
+        # plt.show()
+        plt.savefig(os.path.join(debug_vis_path, str(ref_time)+'.jpg'))
+        
+        
 if __name__ == '__main__':
     mmcv.mkdir_or_exist(os.path.join(DATA_PATH, OUT_PATH))
     for info_path in info_paths:

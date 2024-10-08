@@ -191,7 +191,10 @@ class BEVDepthHead(CenterHead):
                  feature_map_size[0]),
                 device='cuda')
 
-            anno_box = gt_bboxes_3d.new_zeros((max_objs, 10),
+            # anno_box = gt_bboxes_3d.new_zeros((max_objs, 10),
+            #                                   dtype=torch.float32,
+            #                                   device='cuda')
+            anno_box = gt_bboxes_3d.new_zeros((max_objs, 8),
                                               dtype=torch.float32,
                                               device='cuda')
 
@@ -265,8 +268,8 @@ class BEVDepthHead(CenterHead):
                         box_dim,
                         torch.sin(rot).unsqueeze(0),
                         torch.cos(rot).unsqueeze(0),
-                        vx.unsqueeze(0),
-                        vy.unsqueeze(0),
+                        # vx.unsqueeze(0),
+                        # vy.unsqueeze(0),
                     ])
 
             heatmaps.append(heatmap)
@@ -308,7 +311,7 @@ class BEVDepthHead(CenterHead):
                     preds_dict[0]['height'],
                     preds_dict[0]['dim'],
                     preds_dict[0]['rot'],
-                    preds_dict[0]['vel'],
+                    # preds_dict[0]['vel'],
                 ),
                 dim=1,
             )

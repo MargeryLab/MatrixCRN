@@ -203,7 +203,7 @@ class MFAFuser(nn.Module):
 
         return output
 
-    def forward(self, feats, times=None):
+    def forward(self, feats, times=None): #(2,4,80,128,128)
         self.times = times
         if self.times is not None:
             t1 = torch.cuda.Event(enable_timing=True)

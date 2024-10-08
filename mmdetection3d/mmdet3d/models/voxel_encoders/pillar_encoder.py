@@ -154,7 +154,7 @@ class PillarFeatureNet(nn.Module):
         features *= mask
 
         for pfn in self.pfn_layers:
-            features = pfn(features, num_points)
+            features = pfn(features, num_points) # (486,8,7), (486)
 
         return features.squeeze(1)
 

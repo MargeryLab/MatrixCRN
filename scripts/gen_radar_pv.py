@@ -9,20 +9,25 @@ from nuscenes.utils.data_classes import LidarPointCloud
 from nuscenes.utils.geometry_utils import view_points
 
 
-DATA_PATH = 'data/nuScenes'
+DATA_PATH = '/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_fmt_with_labels/24-09-20_00-00-01_000_test'
 RADAR_SPLIT = 'radar_bev_filter'
 OUT_PATH = 'radar_pv_filter'
-info_paths = ['data/nuScenes/nuscenes_infos_train.pkl', 'data/nuScenes/nuscenes_infos_val.pkl']
+info_paths = ['/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_fmt_with_labels/24-09-20_00-00-01_000_test/nuscenes_infos_train.pkl', 
+              '/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_fmt_with_labels/24-09-20_00-00-01_000_test/nuscenes_infos_val.pkl']
 
-# DATA_PATH = 'data/nuScenes/v1.0-test'
+# DATA_PATH = '/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_gen/24-09-04_2'
 # RADAR_SPLIT = 'radar_bev_filter_test'
-# OUT_PATH = 'radar_pv_filter_test'
-# info_paths = ['data/nuScenes/nuscenes_infos_test.pkl']
+# OUT_PATH = 'radar_pv_filter'
+# info_paths = ['/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_gen/24-09-04_2/nuscenes_infos_test.pkl']
 
 MIN_DISTANCE = 0.1
 MAX_DISTANCE = 100.
 
-IMG_SHAPE = (900, 1600)
+# IMG_SHAPE = [(900, 1600),(900, 1600),(900, 1600),(900, 1600),(900, 1600),(900, 1600)]
+IMG_SHAPES = [(1280, 1920), (2160, 3840), (1280, 1920), (1280, 1920), (1280, 1920),(1280, 1920)]
+
+# MAX_DIM = 7
+MAX_DIM = 6
 
 lidar_key = 'LIDAR_TOP'
 cam_keys = [
@@ -53,7 +58,7 @@ def map_pointcloud_to_image(
     # Fifth step: actually take a "picture" of the point cloud.
     # Grab the depths (camera frame z axis points away from the camera).
     depths = pc.points[2, :]
-    features = np.concatenate((depths[:, None], features), axis=1)
+    features = np.concatenate((depths[:, None], features), axis=1) #(1795,5)
 
     # Take the actual picture (matrix multiplication with camera-matrix
     # + renormalization).
@@ -76,14 +81,14 @@ def map_pointcloud_to_image(
     points = points[:, mask]
     features = features[mask]
 
-    return points, features
+    return points, features # 投影到图像坐标系的雷达点云（3x614，第三维都是1）， features(614x5, xyz rcs depth)
 
 
 def worker(info):
     radar_file_name = os.path.split(info['lidar_infos']['LIDAR_TOP']['filename'])[-1]
     points = np.fromfile(os.path.join(DATA_PATH, RADAR_SPLIT, radar_file_name),
                          dtype=np.float32,
-                         count=-1).reshape(-1, 7)
+                         count=-1).reshape(-1, MAX_DIM)
 
     lidar_calibrated_sensor = info['lidar_infos'][lidar_key][
         'calibrated_sensor']
@@ -94,7 +99,7 @@ def worker(info):
     # First step: transform the pointcloud to the ego vehicle
     # frame for the timestamp of the sweep.
     pc = LidarPointCloud(points[:, :4].T)  # use 4 dims for code compatibility
-    features = points[:, 3:]
+    features = points[:, 3:] #(1795,7)->(1795, 4),rcs, vx_comp, vy_comp, (dummy field for sweep info)
 
     pc.rotate(Quaternion(lidar_calibrated_sensor['rotation']).rotation_matrix)
     pc.translate(np.array(lidar_calibrated_sensor['translation']))
@@ -107,13 +112,13 @@ def worker(info):
         cam_calibrated_sensor = info['cam_infos'][cam_key]['calibrated_sensor']
         cam_ego_pose = info['cam_infos'][cam_key]['ego_pose']
         pts_img, features_img = map_pointcloud_to_image(
-            pc.points.copy(), features.copy(), IMG_SHAPE, cam_calibrated_sensor, cam_ego_pose)
+            pc.points.copy(), features.copy(), IMG_SHAPES[i], cam_calibrated_sensor, cam_ego_pose)
 
         file_name = os.path.split(info['cam_infos'][cam_key]['filename'])[-1]
         np.concatenate([pts_img[:2, :].T, features_img],
                        axis=1).astype(np.float32).flatten().tofile(
                            os.path.join(DATA_PATH, OUT_PATH,
-                                        f'{file_name}.bin'))
+                                        f'{file_name}.bin')) #(614,7)->(4298,)
     # plt.savefig(f"{sample_idx}")
 
 

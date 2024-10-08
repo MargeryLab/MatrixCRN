@@ -79,14 +79,12 @@ FPS: 22.74
 import os
 # os.environ["CUDA_VISIBLE_DEVICES"] = '1'
 import torch
-import torch.nn as nn
-from thop import profile
 from utils.torch_dist import synchronize
 
 from exps.base_cli import run_cli
 from exps.base_exp import BEVDepthLightningModel
 
-from models.camera_radar_net_det import CameraRadarNetDet, CameraRadarMatrixVTNet
+from models.camera_radar_net_det import CameraRadarNetDet
 
 
 class CRNLightningModel(BEVDepthLightningModel):
@@ -104,21 +102,15 @@ class CRNLightningModel(BEVDepthLightningModel):
         ################################################
         self.radar_pts_remain_dim = 4
         self.radar_pts_dim = 6
-        # self.radar_pts_remain_dim = 5
-        # self.radar_pts_dim = 7
         self.img_conf=dict(img_mean=[123.675, 116.28, 103.53],
                     img_std=[58.395, 57.12, 57.375],
                     to_rgb=True)
         self.ida_aug_conf = {
-            # 'resize_lim': (0.386, 0.55), #允许的最小和最大缩放比例
-            'resize_lim': (0.33, 0.46),
-            # 'final_dim': (512, 768),
-            'final_dim': (256, 704),
+            'resize_lim': (0.36, 0.48),
+            'final_dim': (512, 768),
             'rot_lim': (0., 0.),
             'H': 1280,
             'W': 1920,
-            # 'H': 900,
-            # 'W': 1600,
             'rand_flip': True,
             'bot_pct_lim': (0.0, 0.0),
             'cams': [
@@ -140,7 +132,7 @@ class CRNLightningModel(BEVDepthLightningModel):
             'y_bound': [-51.2, 51.2, 0.8],
             'z_bound': [-5, 3, 8],
             'd_bound': [2.0, 58.0, 0.8], #camera坐标系下depth的最大值
-            'final_dim': (256, 704),
+            'final_dim': (512, 768),
             'downsample_factor': 16,
             'img_backbone_conf': dict(
                 type='ResNet',
@@ -167,7 +159,7 @@ class CRNLightningModel(BEVDepthLightningModel):
             'pts_voxel_layer': dict(
                 max_num_points=8,
                 voxel_size=[8, 0.4, 2],
-                point_cloud_range=[0, 2.0, 0, 704, 58.0, 2],
+                point_cloud_range=[0, 2.0, 0, 768, 58.0, 2],
                 max_voxels=(768, 1024)
             ),
             'pts_voxel_encoder': dict(
@@ -178,14 +170,14 @@ class CRNLightningModel(BEVDepthLightningModel):
                 with_cluster_center=False,
                 with_voxel_center=True,
                 voxel_size=[8, 0.4, 2],
-                point_cloud_range=[0, 2.0, 0, 704, 58.0, 2],
+                point_cloud_range=[0, 2.0, 0, 768, 58.0, 2],
                 norm_cfg=dict(type='BN1d', eps=1e-3, momentum=0.01),
                 legacy=True
             ),
             'pts_middle_encoder': dict(
                 type='PointPillarsScatter',
                 in_channels=64,
-                output_shape=(140, 88)
+                output_shape=(140, 96)
             ),
             'pts_backbone': dict(
                 type='SECOND',
@@ -240,8 +232,8 @@ class CRNLightningModel(BEVDepthLightningModel):
                 dict(num_class=1, class_names=['CAR']),
                 dict(num_class=2, class_names=['VAN', 'TRUCK']),
                 dict(num_class=2, class_names=['BUS', 'ULTRA_VEHICLE']),
-                dict(num_class=2, class_names=['CYCLIST', 'TRICYCLIST']),
-                dict(num_class=1, class_names=['PEDESTRIAN']),
+                dict(num_class=1, class_names=['CYCLIST']),
+                dict(num_class=2, class_names=['TRICYCLIST','PEDESTRIAN']),
                 dict(num_class=2, class_names=['ANIMAL', 'UNKNOWN_MOVABLE']),
                 dict(num_class=1, class_names=['ROAD_FENCE']),
                 dict(num_class=2, class_names=['TRAFFIC_CONE', 'WATER_FILED_BARRIER']),
@@ -275,7 +267,7 @@ class CRNLightningModel(BEVDepthLightningModel):
                 post_center_limit_range=[-61.2, -61.2, -10.0, 61.2, 61.2, 10.0],
                 max_per_img=500,
                 max_pool_nms=False,
-                min_radius=[4, 12, 10, 1, 0.85, 0.175],
+                min_radius=[4, 12, 10, 0.85, 0.175, 1, 10, 0.175, 0.175, 1],
                 score_threshold=0.01,
                 out_size_factor=4,
                 voxel_size=[0.2, 0.2, 8],
@@ -298,9 +290,6 @@ class CRNLightningModel(BEVDepthLightningModel):
                                        self.head_conf)
 
     def forward(self, sweep_imgs, mats, is_train=False, **inputs):
-        # flops, params = profile(self.model.cuda(), inputs=(sweep_imgs, mats, inputs['pts_pv'], is_train))
-        # print('FLOPs = ' + str(flops/1000**3) + 'G')
-        # print('Params = ' + str(params/1000**2) + 'M')
         return self.model(sweep_imgs, mats, sweep_ptss=inputs['pts_pv'], is_train=is_train) #(1,4,6,3,256,704), (1,4,6,1536,5)
 
     def training_step(self, batch):

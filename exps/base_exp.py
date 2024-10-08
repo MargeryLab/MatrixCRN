@@ -89,10 +89,14 @@ backbone_img_conf = {
     'camera_aware': True
 }
 
+# CLASSES = [
+#     'car', 'truck', 'construction_vehicle', 'bus', 'trailer',
+#     'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone',
+# ]
 CLASSES = [
-    'car', 'truck', 'construction_vehicle', 'bus', 'trailer',
-    'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone',
-]
+    'CAR','VAN', 'TRUCK', 'BUS', 'ULTRA_VEHICLE', 'CYCLIST', 'TRICYCLIST', 'PEDESTRIAN', 'ANIMAL', 
+    'UNKNOWN_MOVABLE', 'ROAD_FENCE', 'TRAFFICCONE', 'WATER_FILED_BARRIER', 'LIFTING_LEVERS', 'PILLAR', 'OTHER_BLOCKS',
+    ]
 
 head_conf = {
     'bev_backbone_conf': dict(
@@ -165,7 +169,8 @@ class BEVDepthLightningModel(LightningModule):
 
     def __init__(self,
                  gpus: int = 1,
-                 data_root='data/nuScenes',
+                #  data_root='/defaultShare/tmpnfs/dataset/zm_radar/jt_dataset/nuScenes_mini',
+                 data_root='/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_fmt_with_labels/24-09-20_00-00-01_000_test',
                  eval_interval=1,
                  batch_size_per_device=8,
                  class_names=CLASSES,
@@ -174,7 +179,9 @@ class BEVDepthLightningModel(LightningModule):
                  ida_aug_conf=ida_aug_conf,
                  bda_aug_conf=bda_aug_conf,
                  rda_aug_conf=rda_aug_conf,
-                 default_root_dir='./outputs/',
+                 radar_pts_dim=6,
+                 radar_pts_remain_dim=4,
+                 default_root_dir='./outputs_zongmu/',
                  **kwargs):
         super().__init__()
         self.save_hyperparameters()
@@ -209,9 +216,11 @@ class BEVDepthLightningModel(LightningModule):
         self.depth_channels = int(
             (self.dbound[1] - self.dbound[0]) / self.dbound[2])
         self.use_fusion = False
-        self.train_info_paths = 'data/nuScenes/nuscenes_infos_train.pkl'
-        self.val_info_paths = 'data/nuScenes/nuscenes_infos_val.pkl'
-        self.predict_info_paths = 'data/nuScenes/nuscenes_infos_test.pkl'
+        # self.train_info_paths = '/defaultShare/tmpnfs/dataset/zm_radar/jt_dataset/nuScenes_mini/nuscenes_infos_train.pkl'
+        # self.val_info_paths = '/defaultShare/tmpnfs/dataset/zm_radar/jt_dataset/nuScenes_mini/nuscenes_infos_train.pkl'
+        self.train_info_paths = '/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_fmt_with_labels/24-09-20_00-00-01_000_test/nuscenes_infos_train.pkl'
+        self.val_info_paths = '/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_fmt_with_labels/24-09-20_00-00-01_000_test/nuscenes_infos_train.pkl'
+        self.predict_info_paths = '/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_fmt_with_labels/24-09-20_00-00-01_000_test/nuscenes_infos_test.pkl'
 
         self.return_image = True
         self.return_depth = True

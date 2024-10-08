@@ -27,27 +27,33 @@ def run_cli(model_class=BEVDepthLightningModel,
                                dest='predict',
                                action='store_true',
                                help='predict model on testing set')
-    parent_parser.add_argument('-b', '--batch_size_per_device', type=int)
+    parent_parser.add_argument('-b', '--batch_size_per_device', type=int, default=2)
     parent_parser.add_argument('--seed',
                                type=int,
                                default=0,
                                help='seed for initializing training.')
-    parent_parser.add_argument('--ckpt_path', type=str)
+    parent_parser.add_argument('--ckpt_path', 
+                               default='/maggie.meng/code/CRN/outputs_zongmu/det/CRN_r50_256x704_128x128_4key/lightning_logs/version_16_remove_vel/checkpoints/epoch=29-step=540.ckpt', type=str)
     parser = BEVDepthLightningModel.add_model_specific_args(parent_parser)
     parser.set_defaults(profiler='simple',
                         deterministic=False,
-                        max_epochs=24,
+                        # amp_backend='native',
+                        # resume_from_checkpoint='/maggie.meng/code/CRN/outputs_zongmu/det/CRN_r50_256x704_128x128_4key/lightning_logs/version_2/checkpoints/epoch=0-step=22.ckpt',
+                        max_epochs=30,
                         strategy='ddp',
                         # strategy='ddp_find_unused_parameters_false',
                         num_sanity_val_steps=0,
                         check_val_every_n_epoch=1,
                         gradient_clip_val=5,
                         limit_val_batches=0.25,
-                        log_every_n_steps=50,
+                        log_every_n_steps=10,
                         enable_checkpointing=True,
                         precision=16,
-                        default_root_dir=os.path.join('./outputs/', exp_name))
+                        default_root_dir=os.path.join('/maggie.meng/code/CRN/outputs_zongmu/', exp_name))
     args = parser.parse_args()
+    # args.e = args.evaluate = True
+    args.predict=args.p=True
+    args.gpus=1
     if args.seed is not None:
         pl.seed_everything(args.seed)
 
