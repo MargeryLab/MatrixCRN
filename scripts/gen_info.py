@@ -6,7 +6,7 @@ from nuscenes.nuscenes import NuScenes
 from nuscenes.utils import splits
 
 
-def generate_info(nusc, scenes, max_cam_sweeps=6, max_lidar_sweeps=10):
+def generate_info(nusc, scenes, max_cam_sweeps=6, max_lidar_sweeps=10, max_radar_sweeps=6):
     infos = list()
     for cur_scene in tqdm(nusc.scene):
         # if cur_scene['name'] not in scenes:
@@ -61,7 +61,8 @@ def generate_info(nusc, scenes, max_cam_sweeps=6, max_lidar_sweeps=10):
                 sweep_radar_info['filename'] = radar_data['filename']
                 sweep_radar_info['calibrated_sensor'] = nusc.get(
                     'calibrated_sensor', radar_data['calibrated_sensor_token'])
-                radar_infos[radar_name] = sweep_radar_info                
+                radar_infos[radar_name] = sweep_radar_info
+            assert len(radar_infos) == 5                
             for lidar_name in lidar_names:
                 lidar_data = nusc.get('sample_data',
                                       cur_sample['data'][lidar_name])
@@ -77,7 +78,7 @@ def generate_info(nusc, scenes, max_cam_sweeps=6, max_lidar_sweeps=10):
                 lidar_infos[lidar_name] = sweep_lidar_info
 
             lidar_sweeps = [dict() for _ in range(max_lidar_sweeps)]
-            radar_sweeps = [dict() for _ in range(max_lidar_sweeps)]
+            radar_sweeps = [dict() for _ in range(max_radar_sweeps)]
             cam_sweeps = [dict() for _ in range(max_cam_sweeps)]
             info['cam_infos'] = cam_infos
             info['radar_infos'] = radar_infos
@@ -112,7 +113,7 @@ def generate_info(nusc, scenes, max_cam_sweeps=6, max_lidar_sweeps=10):
 
             for k, radar_data in enumerate(radar_datas):
                 sweep_radar_data = radar_data
-                for j in range(max_lidar_sweeps):
+                for j in range(max_radar_sweeps):
                     if sweep_radar_data['prev'] == '':
                         break
                     else:
@@ -136,6 +137,8 @@ def generate_info(nusc, scenes, max_cam_sweeps=6, max_lidar_sweeps=10):
                             'calibrated_sensor',
                             cam_data['calibrated_sensor_token'])
                         radar_sweeps[j][radar_names[k]] = sweep_radar_info
+                        # if list(radar_sweeps[j].keys())[0] != 'RADAR_BACK_RIGHT':
+                        #     print("error")                        
                         
             for k, lidar_data in enumerate(lidar_datas):
                 sweep_lidar_data = lidar_data
@@ -169,6 +172,10 @@ def generate_info(nusc, scenes, max_cam_sweeps=6, max_lidar_sweeps=10):
                     cam_sweeps = cam_sweeps[:i]
                     break
             for i, sweep in enumerate(radar_sweeps):
+                try:
+                    assert len(sweep) == 5 or len(sweep) == 0
+                except:
+                    print("error")
                 if len(sweep.keys()) == 0:
                     radar_sweeps = radar_sweeps[:i]
                     break

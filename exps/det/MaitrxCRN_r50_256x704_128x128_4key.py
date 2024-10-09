@@ -95,7 +95,7 @@ class CRNLightningModel(BEVDepthLightningModel):
             ),
             'pts_voxel_encoder': dict(
                 type='PillarFeatureNet',
-                in_channels=4,
+                in_channels=7,
                 feat_channels=[32, 64],
                 with_distance=False,
                 with_cluster_center=False,
@@ -108,7 +108,7 @@ class CRNLightningModel(BEVDepthLightningModel):
             'pts_middle_encoder': dict(
                 type='PointPillarsScatter',
                 in_channels=64,
-                output_shape=(140, 88)
+                output_shape=(256, 256)
             ),
             'pts_backbone': dict(
                 type='SECOND',
@@ -161,15 +161,19 @@ class CRNLightningModel(BEVDepthLightningModel):
                 out_channels=[64, 64, 64, 64]
             ),
             'tasks': [
-                dict(num_class=1, class_names=['car']),
-                dict(num_class=2, class_names=['pillar', 'pedestrian']),
-                dict(num_class=2, class_names=['truck', 'bus']),
-                dict(num_class=1, class_names=['motorbike']),
-                dict(num_class=2, class_names=['rider', 'traffic cones']),
-                dict(num_class=1, class_names=['autonomer_mobile_robot']),
+                dict(num_class=1, class_names=['CAR']),
+                dict(num_class=2, class_names=['VAN', 'TRUCK']),
+                dict(num_class=2, class_names=['BUS', 'ULTRA_VEHICLE']),
+                dict(num_class=1, class_names=['CYCLIST']),
+                dict(num_class=2, class_names=['TRICYCLIST','PEDESTRIAN']),
+                dict(num_class=2, class_names=['ANIMAL', 'UNKNOWN_MOVABLE']),
+                dict(num_class=1, class_names=['ROAD_FENCE']),
+                dict(num_class=2, class_names=['TRAFFIC_CONE', 'WATER_FILED_BARRIER']),
+                dict(num_class=2, class_names=['LIFTING_LEVERS', 'PILLAR']),
+                dict(num_class=1, class_names=['OTHER_BLOCKS']),
             ],
             'common_heads': dict(
-                reg=(2, 2), height=(1, 2), dim=(3, 2), rot=(2, 2), vel=(2, 2)),
+                reg=(2, 2), height=(1, 2), dim=(3, 2), rot=(2, 2)),
             'bbox_coder': dict(
                 type='CenterPointBBoxCoder',
                 post_center_range=[-61.2, -61.2, -10.0, 61.2, 61.2, 10.0],
@@ -178,7 +182,7 @@ class CRNLightningModel(BEVDepthLightningModel):
                 out_size_factor=4,
                 voxel_size=[0.2, 0.2, 8],
                 pc_range=[-51.2, -51.2, -5, 51.2, 51.2, 3],
-                code_size=9,
+                code_size=7,
             ),
             'train_cfg': dict(
                 point_cloud_range=[-51.2, -51.2, -5, 51.2, 51.2, 3],
@@ -189,13 +193,13 @@ class CRNLightningModel(BEVDepthLightningModel):
                 gaussian_overlap=0.1,
                 max_objs=500,
                 min_radius=2,
-                code_weights=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+                code_weights=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
             ),
             'test_cfg': dict(
                 post_center_limit_range=[-61.2, -61.2, -10.0, 61.2, 61.2, 10.0],
                 max_per_img=500,
                 max_pool_nms=False,
-                min_radius=[4, 12, 10, 1, 0.85, 0.175],
+                min_radius=[4, 12, 10, 0.85, 0.175, 1, 10, 0.175, 0.175, 1],
                 score_threshold=0.01,
                 out_size_factor=4,
                 voxel_size=[0.2, 0.2, 8],
@@ -229,7 +233,7 @@ class CRNLightningModel(BEVDepthLightningModel):
             for pg in self.trainer.optimizers[0].param_groups:
                 self.log('learning_rate', pg["lr"])
 
-        (sweep_imgs, mats, _, gt_boxes_3d, gt_labels_3d, _, depth_labels, radar_pts) = batch
+        (sweep_imgs, mats, _, gt_boxes_3d, gt_labels_3d, _, _, radar_pts) = batch
         if torch.cuda.is_available():
             if self.return_image:
                 sweep_imgs = sweep_imgs.cuda()
@@ -245,16 +249,10 @@ class CRNLightningModel(BEVDepthLightningModel):
         targets = self.model.get_targets(gt_boxes_3d, gt_labels_3d)
         loss_detection, loss_heatmap, loss_bbox = self.model.loss(targets, preds)
 
-        if len(depth_labels.shape) == 5:
-            # only key-frame will calculate depth loss
-            depth_labels = depth_labels[:, 0, ...].contiguous()
-        loss_depth = self.get_depth_loss(depth_labels.cuda(), depth_preds, weight=3.)
-
         self.log('train/detection', loss_detection)
         self.log('train/heatmap', loss_heatmap)
         self.log('train/bbox', loss_bbox)
-        self.log('train/depth', loss_depth)
-        return loss_detection + loss_depth
+        return loss_detection
 
     def validation_epoch_end(self, validation_step_outputs):
         detection_losses = list()

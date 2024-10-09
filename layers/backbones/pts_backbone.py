@@ -7,7 +7,7 @@ from mmcv.ops import Voxelization
 from mmdet3d.models import builder
 
 
-class PtsBackbone(nn.Module):
+class PtsBackboneCamCoords(nn.Module):
     """Pillar Feature Net.
 
     The network prepares the pillar features and performs forward pass
@@ -212,7 +212,7 @@ class PtsBackbone(nn.Module):
         return ret_context, ret_occupancy, self.times
 
 
-class PtsBackboneCamCoords(nn.Module):
+class PtsBackbone(nn.Module):
     """Pillar Feature Net.
 
     The network prepares the pillar features and performs forward pass
@@ -249,7 +249,7 @@ class PtsBackboneCamCoords(nn.Module):
                  return_occupancy=False,
                  **kwargs,
                  ):
-        super(PtsBackboneCamCoords, self).__init__()
+        super(PtsBackbone, self).__init__()
 
         self.pts_voxel_layer = Voxelization(**pts_voxel_layer)
         self.pts_voxel_encoder = builder.build_voxel_encoder(pts_voxel_encoder)
@@ -345,21 +345,21 @@ class PtsBackboneCamCoords(nn.Module):
             t1.record()
             torch.cuda.synchronize()
 
-        B, N, P, F = pts.shape #(1,6,1536,5)
-        batch_size = B * N
-        pts = pts.contiguous().view(B*N, P, F) #(6,1536,5)
+        B, P, F = pts.shape
+        batch_size = B
+        pts = pts.contiguous().view(B, P, F) #(2,3500,7)
 
-        voxels, num_points, coors = self.voxelize(pts)
+        voxels, num_points, coors = self.voxelize(pts) #(3176,8,7)
         if self.times is not None:
             t2.record()
             torch.cuda.synchronize()
             self.times['pts_voxelize'].append(t1.elapsed_time(t2))
 
-        voxel_features = self.pts_voxel_encoder(voxels, num_points, coors) #PillarFeatureNet
-        x = self.pts_middle_encoder(voxel_features, coors, batch_size) #PointPillarsScatter(6,64,140,88)
+        voxel_features = self.pts_voxel_encoder(voxels, num_points, coors) #PillarFeatureNet, (3188,64)
+        x = self.pts_middle_encoder(voxel_features, coors, batch_size) #PointPillarsScatter(2,64,256,256)
         x = self.pts_backbone(x) #SECOND,(6,64,140,88),(6,128,70,44),(6,64,35,22)
         if self.pts_neck is not None:
-            x = self.pts_neck(x) #SECONDFPN, (6,384,70,44)
+            x = self.pts_neck(x) #SECONDFPN, (10,384,70,44)
 
         if self.times is not None:
             t3.record()
@@ -369,7 +369,7 @@ class PtsBackboneCamCoords(nn.Module):
         x_context = None
         x_occupancy = None
         if self.return_context:
-            x_context = self.pred_context(x[-1]).unsqueeze(1) #(6,1,80,70,44)
+            x_context = self.pred_context(x[-1]).unsqueeze(1) #(10,1,80,70,44)
         if self.return_occupancy:
             x_occupancy = self.pred_occupancy(x[-1]).unsqueeze(1).sigmoid() #(6,,1,1,70,44)
 
@@ -388,7 +388,7 @@ class PtsBackboneCamCoords(nn.Module):
             t1.record()
             torch.cuda.synchronize()
 
-        batch_size, num_sweeps, num_cams, _, _ = ptss.shape #(1,4,6,1536,5)
+        batch_size, num_sweeps, _, _ = ptss.shape #(2,4,1536,5)
 
         key_context, key_occupancy = self._forward_single_sweep(ptss[:, 0, ...]) #(6,1,80,70,44),(6,1,1,70,44)
         
@@ -414,4 +414,4 @@ class PtsBackboneCamCoords(nn.Module):
             ret_context = torch.cat(context_list, 1)
         if self.return_occupancy:
             ret_occupancy = torch.cat(occupancy_list, 1)
-        return ret_context, ret_occupancy, self.times
+        return ret_context, ret_occupancy, self.times #(2,4,80,128,128)

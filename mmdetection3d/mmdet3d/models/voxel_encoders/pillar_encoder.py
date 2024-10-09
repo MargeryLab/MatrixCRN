@@ -154,9 +154,9 @@ class PillarFeatureNet(nn.Module):
         features *= mask
 
         for pfn in self.pfn_layers:
-            features = pfn(features, num_points) # (486,8,7), (486)
+            features = pfn(features, num_points) # (3176,8,10), (3176)
 
-        return features.squeeze(1)
+        return features.squeeze(1) # (3176,64)
 
 
 @VOXEL_ENCODERS.register_module()

@@ -401,7 +401,7 @@ class MatrixVT(BaseLSSFPN):
 
         return circle_map, ray_map #(2,70,16384), (2,264,16384)
 
-    def reduce_and_project(self, feature, depth, pts_context, mats_dict):
+    def reduce_and_project(self, feature, depth, mats_dict):
         """reduce the feature and depth in height
             dimension and make BEV feature
 
@@ -410,7 +410,6 @@ class MatrixVT(BaseLSSFPN):
             depth (Tensor): Depth Prediction in [B, D, H, W]
             mats_dict (dict): dictionary that contains intrin-
                 and extrin- parameters
-            pts_context: [12,80,70,44]
 
         Returns:
             Tensor: BEV feature in B, C, L, L
@@ -422,19 +421,16 @@ class MatrixVT(BaseLSSFPN):
 
         # N, C, H, W = feature.shape
         # feature=feature.reshape(N,C*H,W)
-        feature = self.horiconv(feature)
-        pts_context = self.horiconv_pts(pts_context) #(12,80,44)
-        fusion_feature = torch.cat([feature, pts_context], dim=1) #(12,160,44)
+        feature = self.horiconv(feature) #(12,80,44)
         # feature = feature.max(2)[0]
         # [N.112,W], [N,C,W]
         depth = depth.permute(0, 2, 1).reshape(B, -1, self.depth_channels) #(12,70,44)->(12,44,70)->(2,264,70)
-        fusion_feature = fusion_feature.permute(0, 2, 1).reshape(B, -1, self.output_channels) #(12,80,44)->(2,264,80)
-        # pts_context = pts_context.permute(0, 2, 1).reshape(B, -1, self.output_channels)
+        feature = feature.permute(0, 2, 1).reshape(B, -1, self.output_channels) #(12,80,44)->(2,264,80)
         circle_map, ray_map = self.get_proj_mat(mats_dict) #(2,70,16384)编码距离信息, (2,264,16384)编码方向信息
 
         proj_mat = depth.matmul(circle_map) #(2,264,16384)
         proj_mat = (proj_mat * ray_map).permute(0, 2, 1) #(2,16384,264)
-        img_feat_with_depth = proj_mat.matmul(fusion_feature) #(2,16384,264) * (2,264,80)->(2,16384,80)
+        img_feat_with_depth = proj_mat.matmul(feature) #(2,16384,264) * (2,264,80)->(2,16384,80)
         img_feat_with_depth = img_feat_with_depth.permute(0, 2, 1).reshape(
             B, -1, *self.voxel_num[:2])
 
@@ -470,8 +466,8 @@ class MatrixVT(BaseLSSFPN):
             torch.cuda.synchronize()
             self.times['img_backbone'].append(t1.elapsed_time(t2))
 
-        source_features = img_feats[:, 0, ...]
-        depth_feature = self.depth_net(
+        source_features = img_feats[:, 0, ...] #(2,6,512,16,44)
+        depth_feature = self.depth_net( #(12,150,16,44)
             source_features.reshape(
                 batch_size * num_cams,
                 source_features.shape[2],
@@ -490,15 +486,17 @@ class MatrixVT(BaseLSSFPN):
         depth = depth_feature[:, :self.depth_channels].float().softmax(1) #(12,70,16,44)
 
         img_feat_with_depth = self.reduce_and_project(
-            feature, depth, pts_context, mats_dict)  # [b*n, c, d, w]
+            feature, depth, mats_dict)  # [b*n, c, d, w]
+        fusion_feature = torch.cat([img_feat_with_depth, pts_context], dim=1) #(12,160,44)
+
         if self.times is not None:
             t4.record()
             torch.cuda.synchronize()
             self.times['img_transform'].append(t3.elapsed_time(t4))
 
         if is_return_depth:
-            return img_feat_with_depth.contiguous(), depth
-        return img_feat_with_depth.contiguous()
+            return fusion_feature.contiguous(), depth
+        return fusion_feature.contiguous()
 
     def forward(self,
                 sweep_imgs,
@@ -568,6 +566,7 @@ class MatrixVT(BaseLSSFPN):
                     sweep_index,
                     sweep_imgs[:, sweep_index:sweep_index + 1, ...],
                     mats_dict,
+                    ptss_context[:, 0, ...] if ptss_context is not None else None,
                     is_return_depth=False)
                 ret_feature_list.append(feature_map)
 

@@ -26,7 +26,7 @@ class CameraRadarNetDet(BaseBEVDepth):
     def __init__(self, backbone_img_conf, backbone_pts_conf, fuser_conf, head_conf):
         super(BaseBEVDepth, self).__init__()
         self.backbone_img = RVTLSSFPN(**backbone_img_conf)
-        self.backbone_pts = PtsBackbone(**backbone_pts_conf)
+        self.backbone_pts = PtsBackboneCamCoords(**backbone_pts_conf)
         self.fuser = MFAFuser(**fuser_conf)
         self.head = BEVDepthHead(**head_conf)
 
@@ -154,7 +154,7 @@ class CameraRadarMatrixVTNet(BaseBEVDepth):
     def __init__(self, backbone_img_conf, backbone_pts_conf, fuser_conf, head_conf):
         super(BaseBEVDepth, self).__init__()
         self.backbone_img = MatrixVT(**backbone_img_conf)
-        self.backbone_pts = PtsBackboneCamCoords(**backbone_pts_conf)
+        self.backbone_pts = PtsBackbone(**backbone_pts_conf)
         self.fuser = MFAFuser(**fuser_conf)
         self.head = BEVDepthHead(**head_conf)
 

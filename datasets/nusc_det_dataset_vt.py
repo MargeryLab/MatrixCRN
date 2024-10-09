@@ -16,19 +16,25 @@ from torch.utils.data import Dataset
 
 __all__ = ['NuscDatasetRadarDet']
 
-SAVE_FIELDS = [0, 1, 2, 8, 9]
+SAVE_FIELDS = [0, 1, 2, 3, 8, 9] # x y z moving_status vx vy
 map_name_from_general_to_detection = {
-    'Car': 'car',
-    'Pillar': 'pillar',
-    'Pedestrian': 'pedestrian',
-    'Truck': 'truck',
-    'Bus': 'bus',
-    'Motorbike': 'motorbike',
-    'Rider': 'rider',
-    'Traffic_cones': 'traffic cones',
-    'Autonomer_Mobile_Robot': 'autonomer_mobile_robot'
+    'CAR': 'CAR',
+    'VAN': 'VAN',
+    'TRUCK': 'TRUCK',
+    'BUS': 'BUS',
+    'ULTRA_VEHICLE': 'ULTRA_VEHICLE',
+    'CYCLIST': 'CYCLIST',
+    'TRICYCLIST': 'TRICYCLIST',
+    'PEDESTRIAN': 'PEDESTRIAN',
+    'ANIMAL': 'ANIMAL',
+    'UNKNOWN_MOVABLE': 'UNKNOWN_MOVABLE',
+    'ROAD_FENCE': 'ROAD_FENCE',
+    'TRAFFIC_CONE': 'TRAFFIC_CONE',
+    'WATER_FILED_BARRIER': 'WATER_FILED_BARRIER',
+    'LIFTING_LEVERS': 'LIFTING_LEVERS',
+    'PILLAR': 'PILLAR',
+    'OTHER_BLOCKS': 'OTHER_BLOCKS'
 }
-
 
 def get_rot(h):
     return torch.Tensor([
@@ -300,9 +306,9 @@ class NuscDatasetRadarDet(Dataset):
     def sample_radar_augmentation(self):
         """Generate bda augmentation values based on bda_config."""
         if self.is_train:
-            radar_idx = [0] + np.random.choice(range(1, self.rda_aug_conf['N_sweeps']),
+            radar_idx = np.r_[0, np.random.choice(range(1, self.rda_aug_conf['N_sweeps']),
                                          self.rda_aug_conf['N_use'] - 1,
-                                         replace=False)
+                                         replace=False)]
         else:
             radar_idx = np.arange(self.rda_aug_conf['N_sweeps'])
         return radar_idx
@@ -421,9 +427,9 @@ class NuscDatasetRadarDet(Dataset):
 
         return torch.Tensor(depth_map)
 
-    def get_radar_sweeps_pts(self, single_frame_radar_infos, radar_idx, use_radar_filters=False, min_distance=2.2):
+    def get_radar_sqe_sweeps_pts(self, single_frame_radar_infos, radar_idx, use_radar_filters=False, min_distance=2.2):
         sample_rec = single_frame_radar_infos[0]
-        points = np.zeros((6, 0))  # 18/5 plus one for time
+        points = np.zeros((7, 0))  # 18/5 plus one for time
         
         # Get reference pose and timestamp.
         ref_sd_token = sample_rec['RADAR_FRONT']
@@ -444,7 +450,10 @@ class NuscDatasetRadarDet(Dataset):
             assert idx < len(single_frame_radar_infos)
             sweep = single_frame_radar_infos[idx]
             for radar_chan in radar_chan_list:
-                radar_data = sweep[radar_chan]
+                try:
+                    radar_data = sweep[radar_chan]
+                except:
+                    continue
                 cs_record = radar_data['calibrated_sensor']
                 pose_record = radar_data['ego_pose']
                 pc = RadarPointCloud.from_file(os.path.join(self.data_root, radar_data['filename']))
@@ -465,9 +474,9 @@ class NuscDatasetRadarDet(Dataset):
                 time_diff = (ref_time - 1e-6 * radar_data['timestamp']) * np.ones((1, pc.nbr_points()))
                 filtered_points = pc.points[SAVE_FIELDS, :]
                 new_points = np.concatenate((filtered_points, time_diff), 0)
-                points = np.concatenate((points, new_points), 1)
+                points = np.concatenate((points, new_points), 1) #(7,124)
         
-        return points
+        return points # (7, 2167), SAVE_FIELDS + time_diff
     
     def get_image(self, cam_infos, radar_infos, cams):
         """Given data and cam_names, return image data needed.
@@ -502,14 +511,11 @@ class NuscDatasetRadarDet(Dataset):
             ida_mats = list()
             sensor2sensor_mats = list()
             timestamps = list()
-            if sensor_idx < len(radar_infos[0][0]):
-                radar_points = list()
             key_info = cam_infos[0]
             resize, resize_dims, crop, flip, \
                 rotate_ida = self.sample_ida_augmentation()
-            radar_idx = self.sample_radar_augmentation()
 
-            for sweep_idx, cam_info in enumerate(cam_infos):
+            for seq_idx, cam_info in enumerate(cam_infos):
                 img = Image.open(
                     os.path.join(self.data_root, cam_info[cam]['filename']))
 
@@ -588,36 +594,37 @@ class NuscDatasetRadarDet(Dataset):
                 imgs.append(img)
                 intrin_mats.append(intrin_mat)
                 timestamps.append(cam_info[cam]['timestamp'])
-                if radar_infos and sweep_idx < len(radar_infos) and sensor_idx < len(radar_infos[0][0]):
-                    # get 5 sweeps radar frame randomly
-                    radar_data = self.get_radar_sweeps_pts(radar_infos[sweep_idx], radar_idx) #(6,N)
-                    radar_data = np.transpose(radar_data)
-                    if radar_data.shape[0] > V:
-                        print('radar_data', radar_data.shape)
-                        print('max pts', V)
-                        assert False, "Way more radar returns than expected"
-                        # radar_data = radar_data[:V]  # fix upper bound of number of radar readings
-                    elif radar_data.shape[0] < V:
-                        radar_data = np.pad(radar_data, [(0, V - radar_data.shape[0]), (0, 0)], mode='constant')
-                    # radar_data = np.transpose(radar_data)
-                    radar_points.append(torch.tensor(radar_data, dtype=torch.float32)) #包含四个时序，所有雷达传感器以及sweeps
+
             sweep_imgs.append(torch.stack(imgs))
             sweep_sensor2ego_mats.append(torch.stack(sensor2ego_mats))
             sweep_intrin_mats.append(torch.stack(intrin_mats))
             sweep_ida_mats.append(torch.stack(ida_mats))
             sweep_sensor2sensor_mats.append(torch.stack(sensor2sensor_mats))
             sweep_timestamps.append(torch.tensor(timestamps))
-            if sensor_idx < len(radar_infos[0]):
-                sweep_radar_points.append(torch.stack(radar_points))
+        
+        radar_idx = self.sample_radar_augmentation()
+        for radar_info in radar_infos:        
+            # get 5 sweeps radar frame randomly
+            radar_data = self.get_radar_sqe_sweeps_pts(radar_info, radar_idx) #(7,N)
+            radar_data = np.transpose(radar_data) #(N, 7)
+            if radar_data.shape[0] > V:
+                print('radar_data', radar_data.shape)
+                print('max pts', V)
+                assert False, "Way more radar returns than expected"
+                # radar_data = radar_data[:V]  # fix upper bound of number of radar readings
+            elif radar_data.shape[0] < V:
+                radar_data = np.pad(radar_data, [(0, V - radar_data.shape[0]), (0, 0)], mode='constant') #(3500, 7)
+
+            sweep_radar_points.append(torch.tensor(radar_data, dtype=torch.float32))
 
         ret_list = [
-            torch.stack(sweep_imgs).permute(1, 0, 2, 3, 4),
+            torch.stack(sweep_imgs).permute(1, 0, 2, 3, 4), #(4,6,3,256,704)
             torch.stack(sweep_sensor2ego_mats).permute(1, 0, 2, 3),
             torch.stack(sweep_intrin_mats).permute(1, 0, 2, 3),
             torch.stack(sweep_ida_mats).permute(1, 0, 2, 3),
             torch.stack(sweep_sensor2sensor_mats).permute(1, 0, 2, 3),
             torch.stack(sweep_timestamps).permute(1, 0),
-            torch.stack(sweep_radar_points).permute(1, 0, 2, 3)
+            torch.stack(sweep_radar_points) # (4,3500,7)
         ]
 
         return ret_list
