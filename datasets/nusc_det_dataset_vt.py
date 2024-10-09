@@ -503,7 +503,7 @@ class NuscDatasetRadarDet(Dataset):
         sweep_sensor2sensor_mats = list()
         sweep_timestamps = list()
         sweep_radar_points = list()
-        V = 700 * 5  # if nsweeps = 5 -> V=3500
+        V = 1000 * 5  # if nsweeps = 5 -> V=5000
         for sensor_idx, cam in enumerate(cams):
             imgs = list()
             sensor2ego_mats = list()

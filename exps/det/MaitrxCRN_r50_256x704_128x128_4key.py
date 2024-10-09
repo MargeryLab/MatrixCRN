@@ -258,21 +258,18 @@ class CRNLightningModel(BEVDepthLightningModel):
         detection_losses = list()
         heatmap_losses = list()
         bbox_losses = list()
-        depth_losses = list()
         for validation_step_output in validation_step_outputs:
             detection_losses.append(validation_step_output[0])
             heatmap_losses.append(validation_step_output[1])
             bbox_losses.append(validation_step_output[2])
-            depth_losses.append(validation_step_output[3])
         synchronize()
 
         self.log('val/detection', torch.mean(torch.stack(detection_losses)), on_epoch=True)
         self.log('val/heatmap', torch.mean(torch.stack(heatmap_losses)), on_epoch=True)
         self.log('val/bbox', torch.mean(torch.stack(bbox_losses)), on_epoch=True)
-        self.log('val/depth', torch.mean(torch.stack(depth_losses)), on_epoch=True)
 
     def validation_step(self, batch, batch_idx):
-        (sweep_imgs, mats, _, gt_boxes_3d, gt_labels_3d, _, depth_labels, radar_pts) = batch
+        (sweep_imgs, mats, _, gt_boxes_3d, gt_labels_3d, _, _, radar_pts) = batch
         if torch.cuda.is_available():
             if self.return_image:
                 sweep_imgs = sweep_imgs.cuda()
@@ -290,11 +287,7 @@ class CRNLightningModel(BEVDepthLightningModel):
             targets = self.model.get_targets(gt_boxes_3d, gt_labels_3d)
             loss_detection, loss_heatmap, loss_bbox = self.model.loss(targets, preds)
 
-            if len(depth_labels.shape) == 5:
-                # only key-frame will calculate depth loss
-                depth_labels = depth_labels[:, 0, ...].contiguous()
-            loss_depth = self.get_depth_loss(depth_labels.cuda(), depth_preds, weight=3.)
-        return loss_detection, loss_heatmap, loss_bbox, loss_depth
+        return loss_detection, loss_heatmap, loss_bbox, 0
 
     def train_dataloader(self):
         train_dataset = NuscDatasetRadarDet(
