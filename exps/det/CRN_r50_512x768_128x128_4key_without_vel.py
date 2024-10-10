@@ -293,7 +293,7 @@ class CRNLightningModel(BEVDepthLightningModel):
                                        self.head_conf)
 
     def forward(self, sweep_imgs, mats, is_train=False, **inputs):
-        return self.model(sweep_imgs, mats, sweep_ptss=inputs['pts_pv'], is_train=is_train) #(1,4,6,3,256,704), (1,4,6,1536,5)
+        return self.model(sweep_imgs, mats, sweep_ptss=inputs['radar_pts'], is_train=is_train) #(1,4,6,3,256,704), (1,4,6,1536,5)
 
     def training_step(self, batch):
         if self.global_rank == 0:

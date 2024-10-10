@@ -1,0 +1,27 @@
+{
+  "class_range": {
+    "CAR": 50,
+    "VAN": 50,
+    "TRUCK": 50,
+    "BUS": 50,
+    "ULTRA_VEHICLE": 50,
+    "CYCLIST": 40,
+    "TRICYCLIST": 40,
+    "PEDESTRIAN": 40,
+    "ANIMAL": 40,
+    "UNKNOWN_MOVABLE":40,
+    "ROAD_FENCE":50,
+    "TRAFFIC_CONE": 30,
+    "WATER_FILED_BARRIER":30,
+    "LIFTING_LEVERS":30,
+    "PILLAR":30,
+    "OTHER_BLOCKS": 30
+  },
+  "dist_fcn": "center_distance",
+  "dist_ths": [0.5, 1.0, 2.0, 4.0],
+  "dist_th_tp": 2.0,
+  "min_recall": 0.1,
+  "min_precision": 0.1,
+  "max_boxes_per_sample": 500,
+  "mean_ap_weight": 5
+}

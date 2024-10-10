@@ -112,7 +112,7 @@ class CameraRadarNetDet(BaseBEVDepth):
             fused, self.times = self.fuser(feats, times=self.times)
             preds, self.times = self.head(fused, times=self.times)
 
-            if self.idx == 1000:
+            if self.idx == 190:
                 time_mean = {}
                 for k, v in self.times.items():
                     time_mean[k] = sum(v) / len(v)
@@ -235,7 +235,7 @@ class CameraRadarMatrixVTNet(BaseBEVDepth):
                                                                          times=self.times)
             feats, self.times = self.backbone_img(sweep_imgs,
                                                   mats_dict,
-                                                #   ptss_context,
+                                                  ptss_context,
                                                 #   ptss_occupancy,
                                                   times=self.times
                                                   )

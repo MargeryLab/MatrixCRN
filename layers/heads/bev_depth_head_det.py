@@ -154,6 +154,8 @@ class BEVDepthHead(CenterHead):
         grid_size = torch.tensor(self.train_cfg['grid_size'])
         pc_range = torch.tensor(self.train_cfg['point_cloud_range'])
         voxel_size = torch.tensor(self.train_cfg['voxel_size'])
+        code_weights = self.train_cfg['code_weights']
+        pred_dim = len(code_weights)
 
         feature_map_size = grid_size[:2] // self.train_cfg['out_size_factor']
 
@@ -191,10 +193,7 @@ class BEVDepthHead(CenterHead):
                  feature_map_size[0]),
                 device='cuda')
 
-            # anno_box = gt_bboxes_3d.new_zeros((max_objs, 10),
-            #                                   dtype=torch.float32,
-            #                                   device='cuda')
-            anno_box = gt_bboxes_3d.new_zeros((max_objs, 8),
+            anno_box = gt_bboxes_3d.new_zeros((max_objs, pred_dim),
                                               dtype=torch.float32,
                                               device='cuda')
 
@@ -262,15 +261,27 @@ class BEVDepthHead(CenterHead):
                     box_dim = task_boxes[idx][k][3:6]
                     if self.norm_bbox:
                         box_dim = box_dim.log()
-                    anno_box[new_idx] = torch.cat([
-                        center - torch.tensor([x, y], device='cuda'),
-                        z.unsqueeze(0),
-                        box_dim,
-                        torch.sin(rot).unsqueeze(0),
-                        torch.cos(rot).unsqueeze(0),
-                        # vx.unsqueeze(0),
-                        # vy.unsqueeze(0),
-                    ])
+                    if pred_dim == 10:
+                        anno_box[new_idx] = torch.cat([
+                            center - torch.tensor([x, y], device='cuda'),
+                            z.unsqueeze(0),
+                            box_dim,
+                            torch.sin(rot).unsqueeze(0),
+                            torch.cos(rot).unsqueeze(0),
+                            vx.unsqueeze(0),
+                            vy.unsqueeze(0),
+                        ])
+                    elif pred_dim == 8:
+                        anno_box[new_idx] = torch.cat([
+                            center - torch.tensor([x, y], device='cuda'),
+                            z.unsqueeze(0),
+                            box_dim,
+                            torch.sin(rot).unsqueeze(0),
+                            torch.cos(rot).unsqueeze(0),
+                        ])
+                    else:
+                        print("something error.")
+                        exit(0)                        
 
             heatmaps.append(heatmap)
             anno_boxes.append(anno_box)
@@ -293,6 +304,8 @@ class BEVDepthHead(CenterHead):
         heatmaps, anno_boxes, inds, masks = targets
         return_loss = 0
         return_loss_heatmap, return_loss_bbox = 0, 0
+        code_weights = self.train_cfg['code_weights']
+        dim = len(code_weights)
         for task_id, preds_dict in enumerate(preds_dicts):
             # heatmap focal loss
             preds_dict[0]['heatmap'] = clip_sigmoid(preds_dict[0]['heatmap'])
@@ -305,16 +318,30 @@ class BEVDepthHead(CenterHead):
                                          avg_factor=cls_avg_factor)
             target_box = anno_boxes[task_id]
             # reconstruct the anno_box from multiple reg heads
-            preds_dict[0]['anno_box'] = torch.cat(
-                (
-                    preds_dict[0]['reg'],
-                    preds_dict[0]['height'],
-                    preds_dict[0]['dim'],
-                    preds_dict[0]['rot'],
-                    # preds_dict[0]['vel'],
-                ),
-                dim=1,
-            )
+            if dim == 10:
+                preds_dict[0]['anno_box'] = torch.cat(
+                    (
+                        preds_dict[0]['reg'],
+                        preds_dict[0]['height'],
+                        preds_dict[0]['dim'],
+                        preds_dict[0]['rot'],
+                        preds_dict[0]['vel'],
+                    ),
+                    dim=1,
+                )
+            elif dim == 8:
+                preds_dict[0]['anno_box'] = torch.cat(
+                    (
+                        preds_dict[0]['reg'],
+                        preds_dict[0]['height'],
+                        preds_dict[0]['dim'],
+                        preds_dict[0]['rot'],
+                    ),
+                    dim=1,
+                )
+            else:
+                print("Something error.")
+                exit(0)
 
             # Regression loss for dimension, offset, height, rotation
             num = masks[task_id].float().sum()
@@ -327,7 +354,6 @@ class BEVDepthHead(CenterHead):
                               min=1e-4).item()
             isnotnan = (~torch.isnan(target_box)).float()
             mask *= isnotnan
-            code_weights = self.train_cfg['code_weights']
             bbox_weights = mask * mask.new_tensor(code_weights)
             loss_bbox = self.loss_bbox(pred,
                                        target_box,
