@@ -33,6 +33,8 @@ optimizer_config = dict(
 H = 900
 W = 1600
 final_dim = (256, 704)
+radar_pts_dim=4,
+radar_pts_remain_dim=6,
 img_conf = dict(img_mean=[123.675, 116.28, 103.53],
                 img_std=[58.395, 57.12, 57.375],
                 to_rgb=True)
@@ -90,12 +92,12 @@ backbone_img_conf = {
 }
 
 # CLASSES = [
-#     'car', 'truck', 'construction_vehicle', 'bus', 'trailer',
-#     'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone',
+# 'car', 'truck', 'bus', 'trailer', 'construction_vehicle', 'pedestrian', 'motorcycle', 'bicycle',
+#                    'traffic_cone', 'barrier',
 # ]
 CLASSES = [
     'CAR','VAN', 'TRUCK', 'BUS', 'ULTRA_VEHICLE', 'CYCLIST', 'TRICYCLIST', 'PEDESTRIAN', 'ANIMAL', 
-    'UNKNOWN_MOVABLE', 'ROAD_FENCE', 'TRAFFICCONE', 'WATER_FILED_BARRIER', 'LIFTING_LEVERS', 'PILLAR', 'OTHER_BLOCKS',
+    'UNKNOWN_MOVABLE', 'ROAD_FENCE', 'TRAFFIC_CONE', 'WATER_FILED_BARRIER', 'LIFTING_LEVERS', 'PILLAR', 'OTHER_BLOCKS',
     ]
 
 head_conf = {
@@ -179,13 +181,15 @@ class BEVDepthLightningModel(LightningModule):
                  ida_aug_conf=ida_aug_conf,
                  bda_aug_conf=bda_aug_conf,
                  rda_aug_conf=rda_aug_conf,
-                 radar_pts_dim=6,
-                 radar_pts_remain_dim=4,
+                 radar_pts_dim=radar_pts_dim,
+                 radar_pts_remain_dim=radar_pts_remain_dim,
                  default_root_dir='./outputs_zongmu/',
                  **kwargs):
         super().__init__()
         self.save_hyperparameters()
         self.gpus = gpus
+        self.radar_pts_remain_dim = radar_pts_remain_dim
+        self.radar_pts_dim = radar_pts_dim
         self.optimizer_config = optimizer_config
         self.pretrain_config = pretrain_config
         self.eval_interval = eval_interval
@@ -200,6 +204,8 @@ class BEVDepthLightningModel(LightningModule):
         mmcv.mkdir_or_exist(default_root_dir)
         self.default_root_dir = default_root_dir
         self.evaluator = DetNuscEvaluator(class_names=self.class_names,
+                                          data_root=data_root,
+                                          version='v1.0-trainval',
                                           output_dir=self.default_root_dir)
         self.model = BaseBEVDepth(self.backbone_img_conf,
                                   self.head_conf)
@@ -315,16 +321,16 @@ class BEVDepthLightningModel(LightningModule):
         return gt_depths.float()
 
     def eval_step(self, batch, batch_idx, prefix: str):
-        (sweep_imgs, mats, img_metas, _, _, _, _, pts_pv) = batch
+        (sweep_imgs, mats, img_metas, _, _, _, _, radar_pts) = batch
         if torch.cuda.is_available():
             if self.return_image:
                 sweep_imgs = sweep_imgs.cuda()
                 for key, value in mats.items():
                     mats[key] = value.cuda()
             if self.return_radar_pv:
-                pts_pv = pts_pv.cuda()
+                radar_pts = radar_pts.cuda()
         preds = self(sweep_imgs, mats,
-                     pts_pv=pts_pv,
+                     radar_pts=radar_pts,
                      is_train=False)
         if isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
             results = self.model.module.get_bboxes(preds, img_metas)
@@ -407,6 +413,8 @@ class BEVDepthLightningModel(LightningModule):
             bda_aug_conf=self.bda_aug_conf,
             rda_aug_conf=self.rda_aug_conf,
             img_backbone_conf=self.backbone_img_conf,
+            radar_pts_remain_dim=self.radar_pts_remain_dim,
+            radar_pts_dim=self.radar_pts_dim,
             classes=self.class_names,
             data_root=self.data_root,
             info_paths=self.train_info_paths,
@@ -445,6 +453,8 @@ class BEVDepthLightningModel(LightningModule):
             bda_aug_conf=self.bda_aug_conf,
             rda_aug_conf=self.rda_aug_conf,
             img_backbone_conf=self.backbone_img_conf,
+            radar_pts_remain_dim=self.radar_pts_remain_dim,
+            radar_pts_dim=self.radar_pts_dim,
             classes=self.class_names,
             data_root=self.data_root,
             info_paths=self.val_info_paths,
@@ -482,6 +492,8 @@ class BEVDepthLightningModel(LightningModule):
             bda_aug_conf=self.bda_aug_conf,
             rda_aug_conf=self.rda_aug_conf,
             img_backbone_conf=self.backbone_img_conf,
+            radar_pts_remain_dim=self.radar_pts_remain_dim,
+            radar_pts_dim=self.radar_pts_dim,
             classes=self.class_names,
             data_root=self.data_root,
             info_paths=self.val_info_paths,

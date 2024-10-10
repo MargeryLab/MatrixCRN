@@ -44,7 +44,7 @@ class PtsBackboneCamCoords(nn.Module):
                  return_occupancy=True,
                  **kwargs,
                  ):
-        super(PtsBackbone, self).__init__()
+        super(PtsBackboneCamCoords, self).__init__()
 
         self.pts_voxel_layer = Voxelization(**pts_voxel_layer)
         self.pts_voxel_encoder = builder.build_voxel_encoder(pts_voxel_encoder)

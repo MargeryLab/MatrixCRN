@@ -53,7 +53,7 @@ class DetNuscEvaluator():
         'ANIMAL':'',
         'UNKNOWN_MOVABLE':'',
         'ROAD_FENCE':'',
-        'TRAFFICCONE':'',
+        'TRAFFIC_CONE':'',
         'WATER_FILED_BARRIER':'',
         'LIFTING_LEVERS':'',
         'PILLAR':'',
@@ -63,7 +63,7 @@ class DetNuscEvaluator():
     def __init__(
         self,
         class_names,
-        eval_version='detection_cvpr_2019',
+        eval_version='zongmu',
         data_root='/defaultShare/tmpnfs/dataset/zm_radar/jt_dataset/nuScenes_mini',
         version='v1.0-mini',
         modality=dict(use_lidar=False,

@@ -1,62 +1,62 @@
 """
-mAP: 0.4492
-mATE: 0.5236
-mASE: 0.2857
-mAOE: 0.5640
-mAVE: 0.2781
-mAAE: 0.1792
-NDS: 0.5415
-Eval time: 185.7s
+mAP: 0.4725
+mATE: 0.5190
+mASE: 0.2819
+mAOE: 0.4936
+mAVE: 0.2732
+mAAE: 0.1779
+NDS: 0.5617
+Eval time: 182.7s
 
 Per-class results:
 Object Class	AP	ATE	ASE	AOE	AVE	AAE
-car	0.702	0.312	0.172	0.146	0.306	0.197
-truck	0.406	0.501	0.221	0.153	0.235	0.207
-bus	0.506	0.542	0.210	0.130	0.404	0.178
-trailer	0.227	0.880	0.252	0.600	0.205	0.100
-construction_vehicle	0.133	0.819	0.518	1.251	0.111	0.352
-pedestrian	0.450	0.558	0.291	0.683	0.368	0.174
-motorcycle	0.478	0.413	0.257	0.820	0.425	0.213
-bicycle	0.442	0.409	0.268	1.140	0.171	0.012
-traffic_cone	0.544	0.414	0.378	nan	nan	nan
-barrier	0.604	0.388	0.291	0.153	nan	nan
+car	0.719	0.307	0.169	0.129	0.296	0.192
+truck	0.427	0.498	0.219	0.140	0.231	0.190
+bus	0.533	0.565	0.202	0.093	0.389	0.202
+trailer	0.239	0.834	0.255	0.671	0.189	0.075
+construction_vehicle	0.158	0.857	0.500	1.289	0.124	0.354
+pedestrian	0.462	0.561	0.293	0.668	0.358	0.178
+motorcycle	0.541	0.396	0.258	0.599	0.426	0.215
+bicycle	0.459	0.400	0.258	0.707	0.173	0.016
+traffic_cone	0.577	0.397	0.390	nan	nan	nan
+barrier	0.610	0.375	0.276	0.146	nan	nan
 
-img: 10.84
-  img_backbone: 3.62
-  img_dep: 1.35
-  img_transform: 5.01
+img: 18.66
+  img_backbone: 11.22
+  img_dep: 1.51
+  img_transform: 5.15
   img_pool: 0.54
-pts: 8.46
-  pts_voxelize: 1.87
-  pts_backbone: 5.27
-  pts_head: 0.64
-fusion: 6.77
+pts: 10.62
+  pts_voxelize: 1.92
+  pts_backbone: 6.79
+  pts_head: 1.31
+fusion: 6.80
   fusion_pre: 0.81
-  fusion_layer: 5.31
-  fusion_post: 0.07
-head: 7.97
-  head_backbone: 2.14
-  head_head: 5.83
-total: 34.04
+  fusion_layer: 5.34
+  fusion_post: 0.06
+head: 7.90
+  head_backbone: 2.46
+  head_head: 5.44
+total: 43.97
 
-FPS: 29.38
+FPS: 22.74
 
    | Name                                    | Type                      | Params
 ---------------------------------------------------------------------------------------
-0  | model                                   | CameraRadarNetDet         | 37.2 M
-1  | model.backbone_img                      | RVTLSSFPN                 | 17.0 M
-2  | model.backbone_img.img_backbone         | ResNet                    | 11.2 M
-3  | model.backbone_img.img_neck             | SECONDFPN                 | 246 K
-4  | model.backbone_img.depth_net            | DepthNet                  | 4.8 M
+0  | model                                   | CameraRadarNetDet         | 61.4 M
+1  | model.backbone_img                      | RVTLSSFPN                 | 31.6 M
+2  | model.backbone_img.img_backbone         | ResNet                    | 23.5 M
+3  | model.backbone_img.img_neck             | SECONDFPN                 | 2.0 M
+4  | model.backbone_img.depth_net            | DepthNet                  | 5.4 M
 5  | model.backbone_img.view_aggregation_net | ViewAggregation           | 807 K
-6  | model.backbone_pts                      | PtsBackbone               | 3.1 M
+6  | model.backbone_pts                      | PtsBackbone               | 5.7 M
 7  | model.backbone_pts.pts_voxel_layer      | Voxelization              | 0
 8  | model.backbone_pts.pts_voxel_encoder    | PillarFeatureNet          | 2.3 K
 9  | model.backbone_pts.pts_middle_encoder   | PointPillarsScatter       | 0
-10 | model.backbone_pts.pts_backbone         | SECOND                    | 2.7 M
-11 | model.backbone_pts.pts_neck             | SECONDFPN                 | 90.5 K
-12 | model.backbone_pts.pred_context         | Sequential                | 173 K
-13 | model.backbone_pts.pred_occupancy       | Sequential                | 166 K
+10 | model.backbone_pts.pts_backbone         | SECOND                    | 4.2 M
+11 | model.backbone_pts.pts_neck             | SECONDFPN                 | 180 K
+12 | model.backbone_pts.pred_context         | Sequential                | 679 K
+13 | model.backbone_pts.pred_occupancy       | Sequential                | 664 K
 14 | model.fuser                             | MFAFuser                  | 1.2 M
 15 | model.fuser.norm_img                    | LayerNorm                 | 160
 16 | model.fuser.norm_pts                    | LayerNorm                 | 160
@@ -67,15 +67,17 @@ FPS: 29.38
 21 | model.fuser.norm_layers2                | ModuleList                | 1.5 K
 22 | model.fuser.attn_layers                 | ModuleList                | 198 K
 23 | model.fuser.reduce_conv                 | Sequential                | 590 K
-24 | model.head                              | BEVDepthHead              | 15.8 M
+24 | model.head                              | BEVDepthHead              | 22.8 M
 25 | model.head.loss_cls                     | GaussianFocalLoss         | 0
 26 | model.head.loss_bbox                    | L1Loss                    | 0
 27 | model.head.shared_conv                  | ConvModule                | 147 K
 28 | model.head.task_heads                   | ModuleList                | 1.4 M
-29 | model.head.trunk                        | ResNet                    | 11.9 M
-30 | model.head.neck                         | SECONDFPN                 | 2.4 M
+29 | model.head.trunk                        | ResNet                    | 18.3 M
+30 | model.head.neck                         | SECONDFPN                 | 3.0 M
 ---------------------------------------------------------------------------------------
 """
+import os
+# os.environ["CUDA_VISIBLE_DEVICES"] = '1'
 import torch
 from utils.torch_dist import synchronize
 
@@ -98,12 +100,17 @@ class CRNLightningModel(BEVDepthLightningModel):
             lr=2e-4,
             weight_decay=1e-4)
         ################################################
+        self.radar_pts_remain_dim = 4
+        self.radar_pts_dim = 6
+        self.img_conf=dict(img_mean=[123.675, 116.28, 103.53],
+                    img_std=[58.395, 57.12, 57.375],
+                    to_rgb=True)
         self.ida_aug_conf = {
-            'resize_lim': (0.386, 0.55),
-            'final_dim': (256, 704),
+            'resize_lim': (0.36, 0.48),
+            'final_dim': (512, 768),
             'rot_lim': (0., 0.),
-            'H': 900,
-            'W': 1600,
+            'H': 1280,
+            'W': 1920,
             'rand_flip': True,
             'bot_pct_lim': (0.0, 0.0),
             'cams': [
@@ -124,25 +131,25 @@ class CRNLightningModel(BEVDepthLightningModel):
             'x_bound': [-51.2, 51.2, 0.8],
             'y_bound': [-51.2, 51.2, 0.8],
             'z_bound': [-5, 3, 8],
-            'd_bound': [2.0, 58.0, 0.8],
-            'final_dim': (256, 704),
+            'd_bound': [2.0, 58.0, 0.8], #camera坐标系下depth的最大值
+            'final_dim': (512, 768),
             'downsample_factor': 16,
             'img_backbone_conf': dict(
                 type='ResNet',
-                depth=18,
+                depth=50,
                 frozen_stages=0,
                 out_indices=[0, 1, 2, 3],
                 norm_eval=False,
-                init_cfg=dict(type='Pretrained', checkpoint='torchvision://resnet18'),
+                init_cfg=dict(type='Pretrained', checkpoint='torchvision://resnet50'),
             ),
             'img_neck_conf': dict(
                 type='SECONDFPN',
-                in_channels=[64, 128, 256, 512],
+                in_channels=[256, 512, 1024, 2048],
                 upsample_strides=[0.25, 0.5, 1, 2],
-                out_channels=[64, 64, 64, 64],
+                out_channels=[128, 128, 128, 128],
             ),
             'depth_net_conf':
-                dict(in_channels=256, mid_channels=256),
+                dict(in_channels=512, mid_channels=256),
             'radar_view_transform': True,
             'camera_aware': False,
             'output_channels': 80,
@@ -152,31 +159,31 @@ class CRNLightningModel(BEVDepthLightningModel):
             'pts_voxel_layer': dict(
                 max_num_points=8,
                 voxel_size=[8, 0.4, 2],
-                point_cloud_range=[0, 2.0, 0, 704, 58.0, 2],
+                point_cloud_range=[0, 2.0, 0, 768, 58.0, 2],
                 max_voxels=(768, 1024)
             ),
             'pts_voxel_encoder': dict(
                 type='PillarFeatureNet',
-                in_channels=5,
+                in_channels=4,
                 feat_channels=[32, 64],
                 with_distance=False,
                 with_cluster_center=False,
                 with_voxel_center=True,
                 voxel_size=[8, 0.4, 2],
-                point_cloud_range=[0, 2.0, 0, 704, 58.0, 2],
+                point_cloud_range=[0, 2.0, 0, 768, 58.0, 2],
                 norm_cfg=dict(type='BN1d', eps=1e-3, momentum=0.01),
                 legacy=True
             ),
             'pts_middle_encoder': dict(
                 type='PointPillarsScatter',
                 in_channels=64,
-                output_shape=(140, 88)
+                output_shape=(140, 96)
             ),
             'pts_backbone': dict(
                 type='SECOND',
                 in_channels=64,
                 out_channels=[64, 128, 256],
-                layer_nums=[2, 3, 3],
+                layer_nums=[3, 5, 5],
                 layer_strides=[1, 2, 2],
                 norm_cfg=dict(type='BN', eps=1e-3, momentum=0.01),
                 conv_cfg=dict(type='Conv2d', bias=True, padding_mode='reflect')
@@ -184,12 +191,13 @@ class CRNLightningModel(BEVDepthLightningModel):
             'pts_neck': dict(
                 type='SECONDFPN',
                 in_channels=[64, 128, 256],
-                out_channels=[64, 64, 64],
+                out_channels=[128, 128, 128],
                 upsample_strides=[0.5, 1, 2],
                 norm_cfg=dict(type='BN', eps=1e-3, momentum=0.01),
                 upsample_cfg=dict(type='deconv', bias=False),
                 use_conv_for_no_stride=True
-                ),
+            ),
+            'occupancy_init': 0.01,
             'out_channels_pts': 80,
         }
         ################################################
@@ -212,21 +220,25 @@ class CRNLightningModel(BEVDepthLightningModel):
                 dilations=(1, 1, 1),
                 out_indices=[0, 1, 2],
                 norm_eval=False,
-                base_channels=128,
+                base_channels=160,
             ),
             'bev_neck_conf': dict(
                 type='SECONDFPN',
-                in_channels=[128, 128, 256, 512],
+                in_channels=[128, 160, 320, 640],
                 upsample_strides=[1, 2, 4, 8],
                 out_channels=[64, 64, 64, 64]
             ),
             'tasks': [
-                dict(num_class=1, class_names=['car']),
-                dict(num_class=2, class_names=['truck', 'construction_vehicle']),
-                dict(num_class=2, class_names=['bus', 'trailer']),
-                dict(num_class=1, class_names=['barrier']),
-                dict(num_class=2, class_names=['motorcycle', 'bicycle']),
-                dict(num_class=2, class_names=['pedestrian', 'traffic_cone']),
+                dict(num_class=1, class_names=['CAR']),
+                dict(num_class=2, class_names=['VAN', 'TRUCK']),
+                dict(num_class=2, class_names=['BUS', 'ULTRA_VEHICLE']),
+                dict(num_class=1, class_names=['CYCLIST']),
+                dict(num_class=2, class_names=['TRICYCLIST','PEDESTRIAN']),
+                dict(num_class=2, class_names=['ANIMAL', 'UNKNOWN_MOVABLE']),
+                dict(num_class=1, class_names=['ROAD_FENCE']),
+                dict(num_class=2, class_names=['TRAFFIC_CONE', 'WATER_FILED_BARRIER']),
+                dict(num_class=2, class_names=['LIFTING_LEVERS', 'PILLAR']),
+                dict(num_class=1, class_names=['OTHER_BLOCKS']),
             ],
             'common_heads': dict(
                 reg=(2, 2), height=(1, 2), dim=(3, 2), rot=(2, 2), vel=(2, 2)),
@@ -255,7 +267,7 @@ class CRNLightningModel(BEVDepthLightningModel):
                 post_center_limit_range=[-61.2, -61.2, -10.0, 61.2, 61.2, 10.0],
                 max_per_img=500,
                 max_pool_nms=False,
-                min_radius=[4, 12, 10, 1, 0.85, 0.175],
+                min_radius=[4, 12, 10, 0.85, 0.175, 1, 10, 0.175, 0.175, 1],
                 score_threshold=0.01,
                 out_size_factor=4,
                 voxel_size=[0.2, 0.2, 8],
@@ -278,7 +290,7 @@ class CRNLightningModel(BEVDepthLightningModel):
                                        self.head_conf)
 
     def forward(self, sweep_imgs, mats, is_train=False, **inputs):
-        return self.model(sweep_imgs, mats, sweep_ptss=inputs['radar_pts'], is_train=is_train)
+        return self.model(sweep_imgs, mats, sweep_ptss=inputs['radar_pts'], is_train=is_train) #(1,4,6,3,256,704), (1,4,6,1536,5)
 
     def training_step(self, batch):
         if self.global_rank == 0:
@@ -357,4 +369,4 @@ class CRNLightningModel(BEVDepthLightningModel):
 
 if __name__ == '__main__':
     run_cli(CRNLightningModel,
-            'det/CRN_r18_256x704_128x128_4key')
+            'det/CRN_r50_256x704_128x128_4key')
