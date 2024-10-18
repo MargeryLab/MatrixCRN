@@ -1,3 +1,4 @@
+import os
 import mmcv
 import numpy as np
 from tqdm import tqdm
@@ -23,8 +24,9 @@ def generate_info(nusc, scenes, max_cam_sweeps=6, max_lidar_sweeps=10, max_radar
             info['timestamp'] = cur_sample['timestamp']
             info['scene_token'] = cur_sample['scene_token']
             cam_names = [
-                'CAM_FRONT', 'CAM_FRONT_RIGHT', 'CAM_BACK_RIGHT',
-                'CAM_BACK', 'CAM_BACK_LEFT', 'CAM_FRONT_LEFT'
+                'CAM_FRONT', 
+                'CAM_FRONT_RIGHT', 'CAM_BACK_RIGHT', 'CAM_BACK', 'CAM_BACK_LEFT', 'CAM_FRONT_LEFT', 
+                'CAM_AVM_FRONT', 'CAM_AVM_REAR', 'CAM_AVM_LEFT', 'CAM_AVM_RIGHT'
             ]
             radar_names = ["RADAR_BACK_RIGHT", "RADAR_BACK_LEFT", "RADAR_FRONT", "RADAR_FRONT_LEFT", "RADAR_FRONT_RIGHT"]
             lidar_names = ['LIDAR_TOP']
@@ -43,6 +45,11 @@ def generate_info(nusc, scenes, max_cam_sweeps=6, max_lidar_sweeps=10, max_radar
                 sweep_cam_info['is_key_frame'] = cam_data['is_key_frame']
                 sweep_cam_info['height'] = cam_data['height']
                 sweep_cam_info['width'] = cam_data['width']
+                img_path = os.path.join('/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_fmt_with_labels/24-09-20_00-00-01_000_test/',
+                                        cam_data['filename'])
+                if not os.path.exists(img_path):
+                    print(f"{img_path} not exists")
+                    # exit(1)
                 sweep_cam_info['filename'] = cam_data['filename']
                 sweep_cam_info['calibrated_sensor'] = nusc.get(
                     'calibrated_sensor', cam_data['calibrated_sensor_token'])

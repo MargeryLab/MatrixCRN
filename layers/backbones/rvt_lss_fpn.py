@@ -1,3 +1,5 @@
+import cv2
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.cuda.amp.autocast_mode import autocast
@@ -167,6 +169,7 @@ class RVTLSSFPN(BaseLSSFPN):
 
         self.register_buffer('frustum', self.create_frustum())
         self.z_bound = kwargs['z_bound']
+        self.fisheye = kwargs.get('fisheye',  False)
         self.radar_view_transform = kwargs['radar_view_transform']
         self.camera_aware = kwargs['camera_aware']
 
@@ -184,23 +187,97 @@ class RVTLSSFPN(BaseLSSFPN):
             camera_aware=self.camera_aware
         )
 
-    def get_geometry_collapsed(self, sensor2ego_mat, intrin_mat, ida_mat, bda_mat,
-                               z_min=-5., z_max=3.):
-        batch_size, num_cams, _, _ = sensor2ego_mat.shape #(1,6,4,4)
+    # def get_geometry_collapsed_fisheye(self, sensor2ego_mat, intrin_mat, distort_mats, ida_mat, bda_mat, z_min=-5., z_max=3.):
+    #     batch_size, num_cams, _, _ = sensor2ego_mat.shape
+    #     points = self.frustum  # (D, H, W, 3)
+    #     ida_mat = ida_mat.view(batch_size, num_cams, 1, 1, 1, 4, 4)
+    #     points = ida_mat.inverse().matmul(points.unsqueeze(-1)).squeeze(-1)
+        
+    #     _, _, z_dim, x_dim, y_dim, _ = points.shape
+    #     # Extract intrinsics and distortion coefficients
+    #     cx, cy = intrin_mat[:, :, 0, 2], intrin_mat[:, :, 1, 2]
+    #     fx, fy = intrin_mat[:, :, 0, 0], intrin_mat[:, :, 1, 1]
+    #     k1, k2, k3, k4 = distort_mats.unsqueeze(-1).unbind(dim=2)
+    #     k1, k2, k3, k4 = k1.unsqueeze(2), k2.unsqueeze(2), k3.unsqueeze(2), k4.unsqueeze(2)
 
-        # undo post-transformation
-        # B x N x D x H x W x 3
-        points = self.frustum #(7,16,44,4)
-        ida_mat = ida_mat.view(batch_size, num_cams, 1, 1, 1, 4, 4) #(1,6,4,4)->(1,6,1,1,1,4,4)
-        points = ida_mat.inverse().matmul(points.unsqueeze(-1)).double() #(1,6,70,16,44,4,1), image space to camera space
-        # cam_to_ego
-        points = torch.cat(
-            (points[:, :, :, :, :, :2] * points[:, :, :, :, :, 2:3],
-             points[:, :, :, :, :, 2:]), 5)
+    #     # Convert pixel coordinates to normalized coordinates
+    #     fx = fx.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+    #     fy = fy.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+    #     cx = cx.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+    #     cy = cy.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+    #     x_normalized = points[:, :, 0, :, :, 0]
+    #     y_normalized = points[:, :, 0, :, :, 1]
 
+    #     # Apply Kannala-Brandt projection model
+    #     r = torch.sqrt(x_normalized**2 + y_normalized**2) #(2,5,70,32,48)
+    #     theta = torch.atan(r)
+    #     theta_d = theta * (1 + k1*theta**2 + k2*theta**4 + k3*theta**6 + k4*theta**8)
+    #     scale = torch.where(r == 0, torch.tensor(1.0, dtype=torch.float32, device=points.device), r/theta_d)
+    #     x_undistorted = x_normalized * scale
+    #     y_undistorted = y_normalized * scale
+
+    #     # Compute 3D coordinates
+    #     x_3d = x_undistorted.unsqueeze(2).expand(batch_size, num_cams, z_dim, x_dim, y_dim)
+    #     y_3d = y_undistorted.unsqueeze(2).expand(batch_size, num_cams, z_dim, x_dim, y_dim)
+    #     z_3d = points[..., 2]
+
+    #     # Add padding for homogeneous coordinates
+    #     points = torch.stack((x_3d, y_3d, z_3d, torch.ones_like(x_3d)), -1) #(2,5,70,32,48,4)
+        
+    #     # Adjust coordinates format
+    #     points = torch.cat((points[:, :, :, :, :, :2] * points[:, :, :, :, :, 2:3], 
+    #                         points[:, :, :, :, :, 2:]), -1).double().unsqueeze(-1)
+        
+    #     # From image space to ego space
+    #     combine = sensor2ego_mat.matmul(torch.inverse(intrin_mat)).double()
+    #     points = combine.view(batch_size, num_cams, 1, 1, 1, 4, 4).matmul(points).half()
+
+    #     # Apply body transformation if provided
+    #     if bda_mat is not None:
+    #         bda_mat = bda_mat.unsqueeze(1).repeat(1, num_cams, 1, 1).view(
+    #             batch_size, num_cams, 1, 1, 1, 4, 4)
+    #         points = (bda_mat @ points).squeeze(-1)
+    #     else:
+    #         points = points.squeeze(-1)
+
+    #     # Select valid points based on z-axis range
+    #     points_out = points[:, :, :, 0:1, :, :3]
+    #     points_valid_z = ((points[..., 2] > z_min) & (points[..., 2] < z_max))
+
+    #     return points_out, points_valid_z
+    
+    def get_geometry_collapsed_fisheye(self, sensor2ego_mat, intrin_mat, distort_mats, ida_mat, bda_mat, z_min=-5., z_max=3.):
+        batch_size, num_cams, _, _ = sensor2ego_mat.shape
+        points = self.frustum  # (D, H, W, 3)
+        ida_mat = ida_mat.view(batch_size, num_cams, 1, 1, 1, 4, 4)
+        points = ida_mat.inverse().matmul(points.unsqueeze(-1)).squeeze(-1).to(torch.float32)
+        _, _, z_dim, y_dim, x_dim, _ = points.shape
+        
+        undistorted_points_all = torch.zeros((batch_size, num_cams, 1, y_dim, x_dim, 2), device=points.device, dtype=points.dtype)
+        for b in range(batch_size):
+            for cam_idx in range(num_cams):
+                K = (intrin_mat[b,cam_idx,:3, :3]).cpu().numpy()
+                undistorted_points = cv2.fisheye.undistortPoints\
+                    (points[b, cam_idx, 0, :, :, :2].cpu().numpy(), K, \
+                        distort_mats[b,cam_idx,:].cpu().numpy(), P=K)
+                undistorted_points = torch.tensor(undistorted_points, device=points.device, dtype=points.dtype)
+                undistorted_points_all[b, cam_idx, :, :, :, :2] = undistorted_points
+        
+        undistorted_points_all = undistorted_points_all.repeat(1,1,z_dim,1,1,1)
+        z_3d = points[..., 2].unsqueeze(-1)
+        
+        # Add padding for homogeneous coordinates
+        points = torch.cat((undistorted_points_all, z_3d, torch.ones_like(z_3d)), -1).unsqueeze(-1) #(2,5,70,32,48,4,1)
+        
+        # Adjust coordinates format
+        points = torch.cat((points[:, :, :, :, :, :2, :] * points[:, :, :, :, :, 2:3, :], 
+                            points[:, :, :, :, :, 2:, :]), 5).double()
+        
+        # From image space to ego space
         combine = sensor2ego_mat.matmul(torch.inverse(intrin_mat)).double()
-        points = combine.view(batch_size, num_cams, 1, 1, 1, 4,
-                              4).matmul(points).half() #(1,6,70,16,44,4,1)
+        points = combine.view(batch_size, num_cams, 1, 1, 1, 4, 4).matmul(points).half()
+
+        # Apply body transformation if provided
         if bda_mat is not None:
             bda_mat = bda_mat.unsqueeze(1).repeat(1, num_cams, 1, 1).view(
                 batch_size, num_cams, 1, 1, 1, 4, 4)
@@ -208,7 +285,37 @@ class RVTLSSFPN(BaseLSSFPN):
         else:
             points = points.squeeze(-1)
 
-        points_out = points[:, :, :, 0:1, :, :3] #(1,6,70,16,44,4)->(1,6,70,1,44,3)
+        # Select valid points based on z-axis range
+        points_out = points[:, :, :, 0:1, :, :3]
+        points_valid_z = ((points[..., 2] > z_min) & (points[..., 2] < z_max))
+
+        return points_out, points_valid_z
+    
+    def get_geometry_collapsed(self, sensor2ego_mat, intrin_mat, ida_mat, bda_mat,
+                               z_min=-5., z_max=3.):
+        batch_size, num_cams, _, _ = sensor2ego_mat.shape #(1,6,4,4)
+
+        # undo post-transformation
+        # B x N x D x H x W x 3
+        points = self.frustum #(70,32,48,4)
+        ida_mat = ida_mat.view(batch_size, num_cams, 1, 1, 1, 4, 4) #(2,6,4,4)->(2,6,1,1,1,4,4)
+        points = ida_mat.inverse().matmul(points.unsqueeze(-1)).double() #(2,6,1,1,1,4,4)*(70,32,48,4,1)->(2,6,70,32,48,4,1)
+        # cam_to_ego
+        points = torch.cat(
+            (points[:, :, :, :, :, :2] * points[:, :, :, :, :, 2:3],
+             points[:, :, :, :, :, 2:]), 5)
+
+        combine = sensor2ego_mat.matmul(torch.inverse(intrin_mat)).double() #(2,6,4,4)
+        points = combine.view(batch_size, num_cams, 1, 1, 1, 4,
+                              4).matmul(points).half() #(2,6,1,1,1,4,4)*(2,6,70,32,48,4,1)->(2,6,70,32,48,4,1)
+        if bda_mat is not None:
+            bda_mat = bda_mat.unsqueeze(1).repeat(1, num_cams, 1, 1).view(
+                batch_size, num_cams, 1, 1, 1, 4, 4)
+            points = (bda_mat @ points).squeeze(-1)
+        else:
+            points = points.squeeze(-1)
+
+        points_out = points[:, :, :, 0:1, :, :3] #(2,6,70,32,48,4)->(2,6,70,1,48,3)
         points_valid_z = ((points[..., 2] > z_min) & (points[..., 2] < z_max)) #(2,6,70,16,44)
 
         return points_out, points_valid_z
@@ -237,7 +344,7 @@ class RVTLSSFPN(BaseLSSFPN):
     def _forward_single_sweep(self,
                               sweep_index,
                               sweep_imgs,
-                              mats_dict,
+                              mats,
                               pts_context,
                               pts_occupancy,
                               return_depth=False):
@@ -246,7 +353,7 @@ class RVTLSSFPN(BaseLSSFPN):
         Args:
             sweep_index (int): Index of sweeps.
             sweep_imgs (Tensor): Input images.
-            mats_dict (dict):
+            mats (list):
                 sensor2ego_mats(Tensor): Transformation matrix from
                     camera to ego.
                 intrin_mats(Tensor): Intrinsic matrix.
@@ -287,7 +394,7 @@ class RVTLSSFPN(BaseLSSFPN):
         # predict image context feature, depth distribution
         depth_feature = self._forward_depth_net( #(6,70+80,16,44)
             source_features,
-            mats_dict,
+            mats,
         )
         if self.times is not None:
             t3.record()
@@ -301,11 +408,21 @@ class RVTLSSFPN(BaseLSSFPN):
         img_feat_with_depth = depth_occupancy.unsqueeze(1) * image_feature.unsqueeze(2) #(12,80,70,16,44)
 
         # calculate frustum grid within valid height
-        geom_xyz, geom_xyz_valid = self.get_geometry_collapsed( #(2,6,70,1,44,3),（2,6,70,16,44）
-            mats_dict['sensor2ego_mats'][:, sweep_index, ...],
-            mats_dict['intrin_mats'][:, sweep_index, ...],
-            mats_dict['ida_mats'][:, sweep_index, ...],
-            mats_dict.get('bda_mat', None))
+        if self.fisheye:
+            geom_xyz, geom_xyz_valid = self.get_geometry_collapsed_fisheye( #(2,6,70,1,44,3),（2,6,70,16,44）
+                mats[0][:, sweep_index, ...], # sensor2ego_mats
+                mats[1][:, sweep_index, ...], # intrin_mats
+                mats[2][:, sweep_index, ...], # distort_mats
+                mats[3][:, sweep_index, ...], # ida_mats
+                mats[-1] if len(mats) > 5 else None
+                )
+        else:
+            geom_xyz, geom_xyz_valid = self.get_geometry_collapsed( #(2,6,70,1,44,3),（2,6,70,16,44）
+                mats[0][:, sweep_index, ...],
+                mats[1][:, sweep_index, ...],
+                mats[3][:, sweep_index, ...],
+                mats[-1] if len(mats) > 5 else None
+            )
 
         geom_xyz_valid = self._split_batch_cam(geom_xyz_valid, inv=True, num_cams=num_cams).unsqueeze(1)#（12,1,70,16,44）
         img_feat_with_depth = (img_feat_with_depth * geom_xyz_valid).sum(3).unsqueeze(3) #(12,80,70,16,44)->(12,80,70,1,44),可以将无效的体素特征置为零,y方向做了加和
@@ -337,8 +454,8 @@ class RVTLSSFPN(BaseLSSFPN):
         geom_xyz[..., 2] = 0  # collapse z-axis
         geo_pos = torch.ones_like(geom_xyz)
         
-        # sparse voxel pooling
-        feature_map, _ = average_voxel_pooling(geom_xyz, fused_context.contiguous(), geo_pos, #(2,160,128,128)
+        # sparse voxel pooling, 将点或特征映射到离散的体素网格中，并在每个体素内计算特征的平均值
+        feature_map, _ = average_voxel_pooling(geom_xyz, fused_context.contiguous(), geo_pos,
                                                self.voxel_num.cuda())
         if self.times is not None:
             t5.record()
@@ -351,7 +468,7 @@ class RVTLSSFPN(BaseLSSFPN):
 
     def forward(self,
                 sweep_imgs,
-                mats_dict,
+                mats,
                 ptss_context,
                 ptss_occupancy,
                 times=None,
@@ -361,7 +478,7 @@ class RVTLSSFPN(BaseLSSFPN):
         Args:
             sweep_imgs(Tensor): Input images with shape of (B, num_sweeps,
                 num_cameras, 3, H, W).
-            mats_dict(dict):
+            mats(list):
                 sensor2ego_mats(Tensor): Transformation matrix from
                     camera to ego with shape of (B, num_sweeps,
                     num_cameras, 4, 4).
@@ -397,7 +514,7 @@ class RVTLSSFPN(BaseLSSFPN):
         key_frame_res = self._forward_single_sweep(
             0,
             sweep_imgs[:, 0:1, ...],
-            mats_dict,
+            mats,
             ptss_context[:, 0, ...] if ptss_context is not None else None,
             ptss_occupancy[:, 0, ...] if ptss_occupancy is not None else None,
             return_depth=return_depth)
@@ -419,7 +536,7 @@ class RVTLSSFPN(BaseLSSFPN):
                 feature_map = self._forward_single_sweep( #4x(2,160,128,128)
                     sweep_index,
                     sweep_imgs[:, sweep_index:sweep_index + 1, ...],
-                    mats_dict,
+                    mats,
                     ptss_context[:, sweep_index, ...] if ptss_context is not None else None,
                     ptss_occupancy[:, sweep_index, ...] if ptss_occupancy is not None else None,
                     return_depth=False)

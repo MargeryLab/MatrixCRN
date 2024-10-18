@@ -9,31 +9,24 @@ import numpy as np
 from nuscenes.utils.data_classes import Box, LidarPointCloud
 from pyquaternion import Quaternion
 
-map_name_from_general_to_detection = {
-    'human.pedestrian.adult': 'pedestrian',
-    'human.pedestrian.child': 'pedestrian',
-    'human.pedestrian.wheelchair': 'ignore',
-    'human.pedestrian.stroller': 'ignore',
-    'human.pedestrian.personal_mobility': 'ignore',
-    'human.pedestrian.police_officer': 'pedestrian',
-    'human.pedestrian.construction_worker': 'pedestrian',
-    'animal': 'ignore',
-    'vehicle.car': 'car',
-    'vehicle.motorcycle': 'motorcycle',
-    'vehicle.bicycle': 'bicycle',
-    'vehicle.bus.bendy': 'bus',
-    'vehicle.bus.rigid': 'bus',
-    'vehicle.truck': 'truck',
-    'vehicle.construction': 'construction_vehicle',
-    'vehicle.emergency.ambulance': 'ignore',
-    'vehicle.emergency.police': 'ignore',
-    'vehicle.trailer': 'trailer',
-    'movable_object.barrier': 'barrier',
-    'movable_object.trafficcone': 'traffic_cone',
-    'movable_object.pushable_pullable': 'ignore',
-    'movable_object.debris': 'ignore',
-    'static_object.bicycle_rack': 'ignore',
-}
+CLASSES = [
+    'CAR','VAN', 'TRUCK', 'BUS', 'ULTRA_VEHICLE', 'CYCLIST', 'TRICYCLIST', 'PEDESTRIAN', 'ANIMAL', 
+    'UNKNOWN_MOVABLE', 'ROAD_FENCE', 'TRAFFICCONE', 'WATER_FILED_BARRIER', 'LIFTING_LEVERS', 'PILLAR', 'OTHER_BLOCKS',
+    ]
+ROOR_PATH = "/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_fmt_with_labels/24-09-20_00-00-01_000_test"
+# Set cameras
+# IMG_KEYS = [
+#     'CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT', 'CAM_BACK_RIGHT',
+#     'CAM_BACK', 'CAM_BACK_LEFT'
+# ]
+# CAMERAS_HEIGHT = [1280, 2160, 1280, 1280, 1280, 1280]
+# CAMERAS_WIDTH = [1920, 3840, 1920, 1920, 1920, 1920]
+
+IMG_KEYS = [
+    'CAM_FRONT', 'CAM_AVM_FRONT', 'CAM_AVM_REAR', 'CAM_AVM_LEFT', 'CAM_AVM_RIGHT'
+]
+CAMERAS_HEIGHT = [2160, 1280, 1280, 1280, 1280, 1280]
+CAMERAS_WIDTH = [3840, 1920, 1920, 1920, 1920, 1920]
 
 
 def parse_args():
@@ -41,9 +34,9 @@ def parse_args():
     parser.add_argument('--idx',
                         type=int,
                         help='Index of the dataset to be visualized.')
-    parser.add_argument('--result_path', type=str, default='/maggie.meng/code/CRN/outputs_zongmu/det/CRN_r50_256x704_128x128_4key/lightning_logs/version_9/checkpoints/results_nusc.json', help='Path of the result json file.')
+    parser.add_argument('--result_path', type=str, default='/maggie.meng/code/CRN/outputs_zongmu/det/CRN_r50_256x704_128x128_4key/results_nusc.json', help='Path of the result json file.')
     # parser.add_argument('--result_path', type=str, default='/maggie.meng/code/CRN/outputs/det/CRN_r50_256x704_128x128_4key/results_nusc.json', help='Path of the result json file.')
-    parser.add_argument('--target_path', type=str, default="/maggie.meng/code/CRN/with_radar_result_vis_1.2k",
+    parser.add_argument('--target_path', type=str, default="/maggie.meng/code/CRN/fisheye_vis_1.2k",
                         help='Target path to save the visualization result.')
     # parser.add_argument('--pkl_path', type=str, default='/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_gen/24-09-04_2/nuscenes_infos_test.pkl')
     parser.add_argument('--pkl_path', type=str, default='/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_fmt_with_labels/24-09-20_00-00-01_000_test/nuscenes_infos_train.pkl')
@@ -137,7 +130,31 @@ def get_3d_lines(corners):
     return ret
 
 
-def get_cam_corners(corners, translation, rotation, cam_intrinsics):
+def undistort_points(points_2d, cam):
+    fx, fy = cam['fx'], cam['fy']
+    cx, cy = cam['cx'], cam['cy']
+    k1, k2, k3, k4 = cam['k1'], cam['k2'], cam['k3'], cam['k4']
+    
+    # Convert pixel coordinates to normalized coordinates
+    x = (points_2d[:, 0] - cx) / fx
+    y = (points_2d[:, 1] - cy) / fy
+    r = np.sqrt(x**2 + y**2)
+    theta = np.arctan(r)
+    
+    # Apply distortion model
+    theta_d = theta * (1 + k1*theta**2 + k2*theta**4 + k3*theta**6 + k4*theta**8)
+    
+    scale = np.where(r == 0, 1.0, theta_d / r)
+    x_undistorted = x * scale
+    y_undistorted = y * scale
+    
+    # Convert back to pixel coordinates
+    undistorted_points = np.stack((x_undistorted * fx + cx, y_undistorted * fy + cy), axis=-1)
+    
+    return undistorted_points
+
+
+def get_cam_corners(corners, translation, rotation, cam_intrinsics, k, cam_key):
     cam_corners = corners.copy()
     cam_corners -= np.array(translation)
     cam_corners = cam_corners @ Quaternion(rotation).inverse.rotation_matrix.T
@@ -145,6 +162,14 @@ def get_cam_corners(corners, translation, rotation, cam_intrinsics):
     valid = cam_corners[:, -1] > 0
     cam_corners /= cam_corners[:, 2:3]
     cam_corners[~valid] = 0
+    
+    # if 'AVM' in cam_key:
+    fx, fy = cam_intrinsics[0, 0], cam_intrinsics[1, 1]
+    cx, cy = cam_intrinsics[0, 2], cam_intrinsics[1, 2]
+    cam_corners[:, :2] = undistort_points(cam_corners, {
+        'fx': fx, 'fy': fy, 'cx': cx, 'cy': cy,
+        'k1': k[0], 'k2': k[1], 'k3': k[2], 'k4': k[3]
+    })   
     return cam_corners
 
 
@@ -154,35 +179,11 @@ def demo(
     dump_file,
     pkl_path,
     # root_path="/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_gen/24-09-04_2",
-    root_path="/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_fmt_with_labels/24-09-20_00-00-01_000_test",
-    threshold=0.3,
+    root_path=ROOR_PATH,
+    threshold=0.32,
     show_range=100,
-    # show_classes=[
-    #     'car',
-    #     'truck',
-    #     'construction_vehicle',
-    #     'bus',
-    #     'trailer',
-    #     'barrier',
-    #     'motorcycle',
-    #     'bicycle',
-    #     'pedestrian',
-    #     'traffic_cone',
-    # ],
-    show_classes=[
-    'CAR','VAN', 'TRUCK', 'BUS', 'ULTRA_VEHICLE', 'CYCLIST', 'TRICYCLIST', 'PEDESTRIAN', 'ANIMAL', 
-    'UNKNOWN_MOVABLE', 'ROAD_FENCE', 'TRAFFICCONE', 'WATER_FILED_BARRIER', 'LIFTING_LEVERS', 'PILLAR', 'OTHER_BLOCKS',
-    ],
+    show_classes=CLASSES,
 ):
-    # Set cameras
-    IMG_KEYS = [
-        'CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT', 'CAM_BACK_RIGHT',
-        'CAM_BACK', 'CAM_BACK_LEFT'
-    ]
-    CAMERAS_HEIGHT = [1280, 2160, 1280, 1280, 1280, 1280]
-    CAMERAS_WIDTH = [1920, 3840, 1920, 1920, 1920, 1920]
-    # CAMERAS_HEIGHT = [900, 900, 900, 900, 900, 900]
-    # CAMERAS_WIDTH = [1600, 1600, 1600, 1600, 1600, 1600]
     # Get data from dataset
     results = mmcv.load(nusc_results_file)['results']
     infos = mmcv.load(pkl_path)
@@ -262,7 +263,9 @@ def demo(
                     corners,
                     info['cam_infos'][k]['calibrated_sensor']['translation'],
                     info['cam_infos'][k]['calibrated_sensor']['rotation'],
-                    info['cam_infos'][k]['calibrated_sensor']['camera_intrinsic'])
+                    np.array(info['cam_infos'][k]['calibrated_sensor']['camera_intrinsic']),
+                    info['cam_infos'][k]['calibrated_sensor']['camera_distortion'],
+                    k)
                 lines = get_3d_lines(cam_corners)
                 for line in lines:
                     plt.plot(line[0],

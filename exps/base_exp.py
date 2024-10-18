@@ -325,12 +325,12 @@ class BEVDepthLightningModel(LightningModule):
         if torch.cuda.is_available():
             if self.return_image:
                 sweep_imgs = sweep_imgs.cuda()
-                for key, value in mats.items():
-                    mats[key] = value.cuda()
+                for idx, value in enumerate(mats):
+                    mats[idx] = value.cuda()
             if self.return_radar_pv:
                 radar_pts = radar_pts.cuda()
         preds = self(sweep_imgs, mats,
-                     radar_pts=radar_pts,
+                     pts_pv=radar_pts,
                      is_train=False)
         if isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
             results = self.model.module.get_bboxes(preds, img_metas)
@@ -365,8 +365,8 @@ class BEVDepthLightningModel(LightningModule):
         if torch.cuda.is_available():
             if self.return_image:
                 sweep_imgs = sweep_imgs.cuda()
-                for key, value in mats.items():
-                    mats[key] = value.cuda()
+                for idx, value in enumerate(mats):
+                    mats[idx] = value.cuda()
             if self.return_radar_pv:
                 pts_pv = pts_pv.cuda()
             gt_boxes_3d = [gt_box.cuda() for gt_box in gt_boxes_3d]
@@ -507,6 +507,7 @@ class BEVDepthLightningModel(LightningModule):
             return_depth=self.return_depth,
             return_radar_pv=self.return_radar_pv,
             remove_z_axis=self.remove_z_axis,
+            export_onnx=self.export_onnx,
             radar_pv_path='radar_pv_filter',
         )
         predict_loader = torch.utils.data.DataLoader(

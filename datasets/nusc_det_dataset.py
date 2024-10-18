@@ -69,6 +69,7 @@ map_name_from_general_to_detection = {
     'OTHER_BLOCKS': 'OTHER_BLOCKS'
 }
 
+EXPORT_ONNX = False
 
 def get_rot(h):
     return torch.Tensor([
@@ -164,6 +165,7 @@ class NuscDatasetRadarDet(Dataset):
                  depth_path='depth_gt',
                  radar_pv_path='radar_pv_filter',
                  remove_z_axis=False,
+                 export_onnx=False,
                  use_cbgs=False,
                  gt_for_radar_only=False,
                  sweep_idxes=list(),
@@ -233,6 +235,9 @@ class NuscDatasetRadarDet(Dataset):
 
         self.max_radar_points_pv = 1536
         self.max_distance_pv = self.img_backbone_conf['d_bound'][1]
+        self.export_onnx = export_onnx
+        global EXPORT_ONNX
+        EXPORT_ONNX = export_onnx
 
     def _get_sample_indices(self):
         """Load annotations from ann_file.
@@ -482,6 +487,7 @@ class NuscDatasetRadarDet(Dataset):
         sweep_imgs = list()
         sweep_sensor2ego_mats = list()
         sweep_intrin_mats = list()
+        sweep_distortion_coefficients = list()
         sweep_ida_mats = list()
         sweep_sensor2sensor_mats = list()
         sweep_timestamps = list()
@@ -491,6 +497,7 @@ class NuscDatasetRadarDet(Dataset):
             imgs = list()
             sensor2ego_mats = list()
             intrin_mats = list()
+            distortion_coefficients = list()
             ida_mats = list()
             sensor2sensor_mats = list()
             timestamps = list()
@@ -561,7 +568,8 @@ class NuscDatasetRadarDet(Dataset):
                 intrin_mat[3, 3] = 1
                 intrin_mat[:3, :3] = torch.Tensor(
                     cam_info[cam]['calibrated_sensor']['camera_intrinsic'])
-
+                distortion_coef = torch.Tensor(
+                    cam_info[cam]['calibrated_sensor']['camera_distortion'])
                 file_name = os.path.split(cam_info[cam]['filename'])[-1]
                 if self.return_depth:
                     point_depth = np.fromfile(os.path.join(
@@ -601,10 +609,12 @@ class NuscDatasetRadarDet(Dataset):
                 img = torch.from_numpy(img).permute(2, 0, 1)
                 imgs.append(img)
                 intrin_mats.append(intrin_mat)
+                distortion_coefficients.append(distortion_coef)
                 timestamps.append(cam_info[cam]['timestamp'])
             sweep_imgs.append(torch.stack(imgs))
             sweep_sensor2ego_mats.append(torch.stack(sensor2ego_mats))
             sweep_intrin_mats.append(torch.stack(intrin_mats))
+            sweep_distortion_coefficients.append(torch.stack(distortion_coefficients))
             sweep_ida_mats.append(torch.stack(ida_mats))
             sweep_sensor2sensor_mats.append(torch.stack(sensor2sensor_mats))
             sweep_timestamps.append(torch.tensor(timestamps))
@@ -617,6 +627,7 @@ class NuscDatasetRadarDet(Dataset):
             torch.stack(sweep_imgs).permute(1, 0, 2, 3, 4),
             torch.stack(sweep_sensor2ego_mats).permute(1, 0, 2, 3),
             torch.stack(sweep_intrin_mats).permute(1, 0, 2, 3),
+            torch.stack(sweep_distortion_coefficients).permute(1, 0, 2),
             torch.stack(sweep_ida_mats).permute(1, 0, 2, 3),
             torch.stack(sweep_sensor2sensor_mats).permute(1, 0, 2, 3),
             torch.stack(sweep_timestamps).permute(1, 0),
@@ -729,9 +740,9 @@ class NuscDatasetRadarDet(Dataset):
             gt_corners = None
         for ann_info in info['ann_infos']:
             # Use ego coordinate.
-            if self.gt_for_radar_only:
-                if ann_info['num_radar_pts'] == 0:
-                    continue
+            # if self.gt_for_radar_only:
+                # if ann_info['num_radar_pts'] == 0:
+                #     continue
             if map_name_from_general_to_detection[ann_info['category_name']] not in self.classes:
                 continue
             # if ann_info['num_lidar_pts'] + ann_info['num_radar_pts'] == 0:
@@ -805,18 +816,20 @@ class NuscDatasetRadarDet(Dataset):
                 sweep_imgs,
                 sweep_sensor2ego_mats,
                 sweep_intrins,
+                sweep_distortion_coefficients,
                 sweep_ida_mats,
                 sweep_sensor2sensor_mats,
                 sweep_timestamps,
-            ) = image_data_list[:6]
+            ) = image_data_list[:7]
         else:
             (
                 sweep_imgs,
                 sweep_intrins,
+                sweep_distortion_coefficients,
                 sweep_ida_mats,
                 sweep_sensor2sensor_mats,
                 sweep_timestamps,
-            ) = None, None, None, None, None
+            ) = None, None, None, None, None, None
             sweep_sensor2ego_mats = self.get_image_sensor2ego_mats(cam_infos, cams)
 
         img_metas = self.get_image_meta(cam_infos, cams)
@@ -834,6 +847,7 @@ class NuscDatasetRadarDet(Dataset):
             sweep_imgs,
             sweep_sensor2ego_mats,
             sweep_intrins,
+            sweep_distortion_coefficients,
             sweep_ida_mats,
             sweep_sensor2sensor_mats,
             bda_mat,
@@ -844,11 +858,11 @@ class NuscDatasetRadarDet(Dataset):
         ]
 
         if self.return_depth:
-            ret_list.append(image_data_list[6])
+            ret_list.append(image_data_list[7])
         else:
             ret_list.append(None)
         if self.return_radar_pv:
-            ret_list.append(image_data_list[7])
+            ret_list.append(image_data_list[8])
         else:
             ret_list.append(None)
 
@@ -860,6 +874,8 @@ class NuscDatasetRadarDet(Dataset):
                     Augmentation Conf: {self.ida_aug_conf}"""
 
     def __len__(self):
+        if self.export_onnx:
+            return 1
         if self.use_cbgs:
             return len(self.sample_indices)
         else:
@@ -874,6 +890,7 @@ def collate_fn(data,
     imgs_batch = list()
     sensor2ego_mats_batch = list()
     intrin_mats_batch = list()
+    distortion_mats_batch = list()
     ida_mats_batch = list()
     sensor2sensor_mats_batch = list()
     bda_mat_batch = list()
@@ -888,6 +905,7 @@ def collate_fn(data,
             sweep_imgs,
             sweep_sensor2ego_mats,
             sweep_intrins,
+            sweep_distortion_coefficients,
             sweep_ida_mats,
             sweep_sensor2sensor_mats,
             bda_mat,
@@ -895,17 +913,18 @@ def collate_fn(data,
             img_metas,
             gt_boxes,
             gt_labels,
-        ) = iter_data[:10]
+        ) = iter_data[:11]
         if is_return_depth:
-            gt_depth = iter_data[10]
+            gt_depth = iter_data[11]
             depth_labels_batch.append(gt_depth)
         if is_return_radar_pv:
-            radar_pv = iter_data[11]
+            radar_pv = iter_data[12]
             radar_pv_batch.append(radar_pv)
 
         imgs_batch.append(sweep_imgs)
         sensor2ego_mats_batch.append(sweep_sensor2ego_mats)
         intrin_mats_batch.append(sweep_intrins)
+        distortion_mats_batch.append(sweep_distortion_coefficients)
         ida_mats_batch.append(sweep_ida_mats)
         sensor2sensor_mats_batch.append(sweep_sensor2sensor_mats)
         bda_mat_batch.append(bda_mat)
@@ -917,12 +936,15 @@ def collate_fn(data,
         mats_dict = dict()
         mats_dict['sensor2ego_mats'] = torch.stack(sensor2ego_mats_batch)
         mats_dict['intrin_mats'] = torch.stack(intrin_mats_batch)
+        mats_dict['distort_mats'] = torch.stack(distortion_mats_batch)
         mats_dict['ida_mats'] = torch.stack(ida_mats_batch)
         mats_dict['sensor2sensor_mats'] = torch.stack(sensor2sensor_mats_batch)
-        mats_dict['bda_mat'] = torch.stack(bda_mat_batch)
+        if not EXPORT_ONNX:
+            mats_dict['bda_mat'] = torch.stack(bda_mat_batch) 
         ret_list = [
             torch.stack(imgs_batch),
-            mats_dict,
+            list(mats_dict.values()),
+            # mats_dict,
             img_metas_batch,
             gt_boxes_3d_batch,
             gt_labels_3d_batch,

@@ -5,6 +5,8 @@ from torch import nn
 from mmdet.models.backbones.resnet import BasicBlock
 
 from .base_lss_fpn import BaseLSSFPN
+t2=None
+t3 = None
 
 class DepthNet(nn.Module):
     def __init__(self, in_channels, mid_channels, context_channels, depth_channels,
@@ -427,7 +429,10 @@ class MatrixVT(BaseLSSFPN):
         depth = depth.permute(0, 2, 1).reshape(B, -1, self.depth_channels) #(12,70,44)->(12,44,70)->(2,264,70)
         feature = feature.permute(0, 2, 1).reshape(B, -1, self.output_channels) #(12,80,44)->(2,264,80)
         circle_map, ray_map = self.get_proj_mat(mats_dict) #(2,70,16384)编码距离信息, (2,264,16384)编码方向信息
-
+        if self.times is not None:
+            t3.record()
+            torch.cuda.synchronize()
+            self.times['img_dep'].append(t2.elapsed_time(t3))
         proj_mat = depth.matmul(circle_map) #(2,264,16384)
         proj_mat = (proj_mat * ray_map).permute(0, 2, 1) #(2,16384,264)
         img_feat_with_depth = proj_mat.matmul(feature) #(2,16384,264) * (2,264,80)->(2,16384,80)
@@ -443,6 +448,7 @@ class MatrixVT(BaseLSSFPN):
                               pts_context=None,
                               pts_occupancy=None,
                               is_return_depth=False):
+        global t2, t3
         if self.times is not None:
             t1 = torch.cuda.Event(enable_timing=True)
             t2 = torch.cuda.Event(enable_timing=True)
@@ -476,24 +482,24 @@ class MatrixVT(BaseLSSFPN):
             ),
             mats_dict,
         )
-        if self.times is not None:
-            t3.record()
-            torch.cuda.synchronize()
-            self.times['img_dep'].append(t2.elapsed_time(t3))
 
         feature = depth_feature[:, self.depth_channels:(
             self.depth_channels + self.output_channels)].float() #(12,80,16,44)
         depth = depth_feature[:, :self.depth_channels].float().softmax(1) #(12,70,16,44)
 
+        # if self.times is not None:
+        #     t3.record()
+        #     torch.cuda.synchronize()
+        #     self.times['img_dep'].append(t2.elapsed_time(t3))
         img_feat_with_depth = self.reduce_and_project(
             feature, depth, mats_dict)  # [b*n, c, d, w]
-        fusion_feature = torch.cat([img_feat_with_depth, pts_context], dim=1) #(12,160,44)
 
         if self.times is not None:
             t4.record()
             torch.cuda.synchronize()
             self.times['img_transform'].append(t3.elapsed_time(t4))
-
+        fusion_feature = torch.cat([img_feat_with_depth, pts_context], dim=1) #(12,160,44)
+        
         if is_return_depth:
             return fusion_feature.contiguous(), depth
         return fusion_feature.contiguous()

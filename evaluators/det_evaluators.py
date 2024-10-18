@@ -119,7 +119,7 @@ class DetNuscEvaluator():
         nusc_eval = NuScenesEval(nusc,
                                  config=self.eval_detection_configs,
                                  result_path=result_path,
-                                 eval_set=eval_set_map[self.version],
+                                 eval_set='mini_train',
                                  output_dir=output_dir,
                                  verbose=False)
         nusc_eval.main(render_curves=False)

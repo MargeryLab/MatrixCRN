@@ -63,8 +63,9 @@ INFO_PATHS = ['/defaultShare/tmpnfs/dataset/zm_radar/nuscenes_fmt_with_labels/24
 
 lidar_key = 'LIDAR_TOP'
 cam_keys = [
-    'CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT', 'CAM_BACK_RIGHT',
-    'CAM_BACK', 'CAM_BACK_LEFT'
+            'CAM_FRONT', 
+            'CAM_FRONT_RIGHT', 'CAM_BACK_RIGHT', 'CAM_BACK', 'CAM_BACK_LEFT', 'CAM_FRONT_LEFT', 
+            'CAM_AVM_FRONT', 'CAM_AVM_REAR', 'CAM_AVM_LEFT', 'CAM_AVM_RIGHT'
 ]
 
 
