@@ -1,7 +1,9 @@
+import os
 import sys
 sys.path.append("/maggie.meng/code/CRN")
 import torch
-import onnx
+import torch.nn as nn
+
 from onnxsim import simplify
 
 from models.camera_radar_net_det import CameraRadarNetDet
@@ -9,18 +11,37 @@ from argparse import ArgumentParser
 
 from exps.base_exp import BEVDepthLightningModel
 from ptq_bev import quantize_net, fuse_conv_bn
-# from torch.onnx import register_custom_op_symbolic
-# from torch.onnx.symbolic_helper import parse_args, _maybe_get_const
 
-# @parse_args('v')
-# def inverse_symbolic(g, input):
-#     output = g.op("com.microsoft::Inverse", input)
-#     input_shape = g.op("Shape", input)
-#     output_shape = g.op("Identity", input_shape)
-#     output.setType(input.type().with_sizes(_maybe_get_const(output_shape, 'is')))
-#     return output
 
-# register_custom_op_symbolic('::inverse', inverse_symbolic, 9)
+class TRTModel_pre(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+        
+    def forward(self,
+                sweep_imgs,
+                mats_dict,
+                sweep_ptss=None,
+                is_train=False
+                ):
+        ptss_context, ptss_occupancy = self.model.backbone_pts(sweep_ptss)
+        # ptss_context, ptss_occupancy = torch.rand(5,1,80,70,48).cuda(), torch.rand(5,1,1,70,48).cuda()
+        geom_xyz, fused_context = self.model.backbone_img(sweep_imgs,
+                                            mats_dict,
+                                            ptss_context,
+                                            ptss_occupancy,
+                                            return_depth=True)
+        return geom_xyz, fused_context # (1,4,5,70,1,48,3), (1,4,5,70,1,48,160), 4 is sequence num, 5 is camera mum
+    
+class TRTModel_post(nn.Module):
+    def __init__(self, model) -> None:
+        super().__init__()
+        self.model = model
+        
+    def forward(self, feats):
+        fused, _ = self.fuser(feats)
+        preds, _ = self.head(fused)
+        return preds 
 
 def run_cli(model_class=BEVDepthLightningModel,
             exp_name='base_exp',
@@ -43,44 +64,68 @@ def run_cli(model_class=BEVDepthLightningModel,
     
     model_engine = model_class(**vars(args))
     model = model_engine.model
-    # ckpt     = torch.load(args.ckpt_path, map_location=args.device)
-    # model.load_state_dict(ckpt['state_dict'], strict =True)
     model = model_class.load_from_checkpoint(args.ckpt_path).model
     model.cuda()
     model.eval()
-    onnx_path = args.ckpt_path.replace('.ckpt', '.onnx')
-    data_loader = model_engine.predict_dataloader()
-    for i, data in enumerate(data_loader):
-        (sweep_imgs, mats, _, gt_boxes_3d, gt_labels_3d, _, depth_labels, pts_pv) = data
-        for i, value in enumerate(mats):
-            mats[i] = value.cuda()
-        with torch.no_grad():
-            torch.onnx.export(
-                model,
-                (sweep_imgs.cuda(), mats, pts_pv.cuda()),
-                onnx_path,
-                opset_version=13,
-                input_names=[
-                    'sweep_imgs', 'mats', 'sweep_ptss'
-                ],
-                do_constant_folding=False,
-                output_names=[f'output_{j}' for j in
-                                range(6 * len(model.head.task_heads))])
-        break
-    print(f"finished, {onnx_path} has saved.")
     
-    onnx_model = onnx.load(onnx_path)
+    seqs_time = 1
+    sweep_imgs = torch.rand(1, seqs_time, 5, 3, 512, 768)
+    mats = []
+    mats.append(torch.rand(1, seqs_time, 5, 4, 4).cuda())
+    mats.append(torch.rand(1, seqs_time, 5, 4, 4).cuda())
+    mats.append(torch.rand(1, seqs_time, 5, 4).cuda())
+    mats.append(torch.rand(1, seqs_time, 5, 4, 4).cuda())
+    mats.append(torch.rand(1, seqs_time, 5, 4, 4).cuda())
+    pts_pv = torch.rand(1, seqs_time, 5, 1536, 4).cuda()
+    
+    trtModel_pre = TRTModel_pre(model)
+    pre_inputs = (sweep_imgs.cuda(), mats, pts_pv.cuda())
+    output_names_pre = ['geom_xyz', 'fused_context']
+    pre_onnx_path = os.path.dirname(args.ckpt_path) + '/crn_pre.onnx'
+    torch.onnx.export(
+        trtModel_pre,
+        pre_inputs,
+        pre_onnx_path,
+        input_names=["sweep_imgs", "trans_mats", "pts_pv"],
+        # output_names=output_names_pre,
+        opset_version=13,
+        training= torch.onnx.TrainingMode.EVAL,
+        do_constant_folding=True
+    )
+    print(f"{pre_onnx_path} has saved.")
+    
+    voxel_num = (128,128,1)
+    fused_context_channel = 160
+    trtModel_post = TRTModel_post(model)
+    post_inputs = (torch.rand(1, fused_context_channel, voxel_num[0], voxel_num[1]).cuda())
+    post_onnx_path = os.path.dirname(args.ckpt_path) + '/crn_post.onnx'
+    output_names_post = [f'output_{j}' for j in range(6 * len(model.head.task_heads))]
+    torch.onnx.export(
+                trtModel_post,
+                post_inputs,
+                post_onnx_path,
+                opset_version=13,
+                input_names=['fused_context',],
+                do_constant_folding=True,
+                output_names=output_names_post)
+    
+    print(f"finished, {post_onnx_path} has saved.")
+    
+    pre_onnx_model = onnx.load(pre_onnx_path)
+    post_onnx_model = onnx.load(post_onnx_path)
     try:
-        onnx.checker.check_model(onnx_model)
+        onnx.checker.check_model(pre_onnx_model)
     except Exception:
         print('ONNX Model Incorrect')
     else:
         print('ONNX Model Correct')
         
-    model_simp, check = simplify(onnx_model)
-    assert check, "Simplified ONNX model could not be validated"
-
-    onnx.save(model_simp, onnx_path)
+    pre_model_simp, pre_check = simplify(pre_onnx_model)
+    post_model_simp, post_check = simplify(post_onnx_model)
+    assert pre_check, "Simplified ONNX model could not be validated"
+    assert post_check, "Simplified ONNX model could not be validated"
+    onnx.save(pre_model_simp, pre_onnx_path)
+    onnx.save(post_model_simp, post_onnx_path)
     print("saved simplified onnx.")
 
 

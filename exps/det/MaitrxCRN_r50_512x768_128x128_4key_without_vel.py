@@ -3,7 +3,7 @@ import torch
 import numpy as np
 from functools import partial
 import pytorch_lightning as pl
-from thop import profile
+# from thop import profile
 from exps.base_cli import run_cli
 from utils.torch_dist import synchronize
 

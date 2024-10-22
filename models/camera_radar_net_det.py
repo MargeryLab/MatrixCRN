@@ -23,12 +23,12 @@ class CameraRadarNetDet(BaseBEVDepth):
         head_conf (dict): Config of head.
     """
 
-    def __init__(self, backbone_img_conf, backbone_pts_conf, fuser_conf, head_conf):
+    def __init__(self, backbone_img_conf, backbone_pts_conf, fuser_conf, head_conf, export_onnx=False):
         super(BaseBEVDepth, self).__init__()
-        self.backbone_img = RVTLSSFPN(**backbone_img_conf)
-        self.backbone_pts = PtsBackboneCamCoords(**backbone_pts_conf)
-        self.fuser = MFAFuser(**fuser_conf)
-        self.head = BEVDepthHead(**head_conf)
+        self.backbone_img = RVTLSSFPN(export_onnx=export_onnx, **backbone_img_conf)
+        self.backbone_pts = PtsBackboneCamCoords(**backbone_pts_conf, export_onnx=export_onnx)
+        self.fuser = MFAFuser(**fuser_conf, export_onnx=export_onnx)
+        self.head = BEVDepthHead(**head_conf, export_onnx=export_onnx)
 
         self.radar_view_transform = backbone_img_conf['radar_view_transform']
 
@@ -55,6 +55,8 @@ class CameraRadarNetDet(BaseBEVDepth):
             'head_backbone': [],
             'head_head': [],
         }
+        
+        self.export_onnx = export_onnx
 
     def forward(self,
                 sweep_imgs,
@@ -96,6 +98,16 @@ class CameraRadarNetDet(BaseBEVDepth):
             fused, _ = self.fuser(feats)
             preds, _ = self.head(fused)
             return preds, depth
+        elif self.export_onnx:
+            ptss_context, ptss_occupancy = self.backbone_pts(sweep_ptss)
+            feats = self.backbone_img(sweep_imgs,
+                                        mats_dict,
+                                        ptss_context,
+                                        ptss_occupancy)
+            fused = self.fuser(feats)
+            preds = self.head(fused)
+
+            return preds            
         else:
             if self.idx < 100:  # skip few iterations for warmup
                 self.times = None

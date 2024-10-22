@@ -188,6 +188,7 @@ class BEVDepthLightningModel(LightningModule):
         super().__init__()
         self.save_hyperparameters()
         self.gpus = gpus
+        self.export_onnx = False
         self.radar_pts_remain_dim = radar_pts_remain_dim
         self.radar_pts_dim = radar_pts_dim
         self.optimizer_config = optimizer_config
@@ -203,10 +204,10 @@ class BEVDepthLightningModel(LightningModule):
         self.rda_aug_conf = rda_aug_conf
         mmcv.mkdir_or_exist(default_root_dir)
         self.default_root_dir = default_root_dir
-        self.evaluator = DetNuscEvaluator(class_names=self.class_names,
-                                          data_root=data_root,
-                                          version='v1.0-trainval',
-                                          output_dir=self.default_root_dir)
+        # self.evaluator = DetNuscEvaluator(class_names=self.class_names,
+        #                                   data_root=data_root,
+        #                                   version='v1.0-trainval',
+        #                                   output_dir=self.default_root_dir)
         self.model = BaseBEVDepth(self.backbone_img_conf,
                                   self.head_conf)
         self.mode = 'valid'
@@ -513,7 +514,7 @@ class BEVDepthLightningModel(LightningModule):
         predict_loader = torch.utils.data.DataLoader(
             predict_dataset,
             batch_size=self.batch_size_per_device,
-            num_workers=4,
+            num_workers=1,
             shuffle=False,
             collate_fn=partial(collate_fn,
                                is_return_image=self.return_image,

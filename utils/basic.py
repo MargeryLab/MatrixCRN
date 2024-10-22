@@ -2,6 +2,64 @@ import numpy as np
 import torch
 EPS = 1e-6
 
+
+
+# from torch.linalg import det
+ 
+# def cof1(M,index):
+#     zs = M[:index[0]-1,:index[1]-1]
+#     ys = M[:index[0]-1,index[1]:]
+#     zx = M[index[0]:,:index[1]-1]
+#     yx = M[index[0]:,index[1]:]
+#     s = torch.cat((zs,ys),axis=1)
+#     x = torch.cat((zx,yx),axis=1)
+#     return det(torch.cat((s,x),axis=0))
+ 
+# def alcof(M,index):
+#     return pow(-1,index[0]+index[1])*cof1(M,index)
+ 
+# def adj(M):
+#     result = torch.zeros((M.shape[0],M.shape[1]))
+#     for i in range(1,M.shape[0]+1):
+#         for j in range(1,M.shape[1]+1):
+#             result[j-1][i-1] = alcof(M,[i,j])
+#     return result
+ 
+# def matrix_inverse(M):
+#     return 1.0/det(M)*adj(M)
+
+def matrix_inverse(x):
+    if x.dim() == 2 and x.size(0) == x.size(1):
+        return _invert_square_matrix(x)
+    elif x.dim() > 2:
+        batch_shape = x.shape[:-2]
+        last_dim_shape = x.shape[-2:]
+        reshaped_x = x.reshape(-1, last_dim_shape[0], last_dim_shape[1])
+        inverses = [_invert_square_matrix(mat) for mat in reshaped_x]
+
+        return torch.stack(inverses).view(*batch_shape, last_dim_shape[1], last_dim_shape[0])
+    else:
+        raise ValueError("Input must be a 2D square matrix or a higher dimensional tensor with \
+            last two dimensions as matrices.")
+
+def _invert_square_matrix(x):
+    if x.size(0) != x.size(1):
+        raise ValueError("Input must be a square matrix.")
+
+    n = x.size(0)
+    identity = torch.eye(n, device=x.device)
+    augmented = torch.cat((x, identity), dim=1)
+
+    # 高斯消元法
+    for i in range(n):
+        augmented[i] = augmented[i] / augmented[i, i]
+        for j in range(n):
+            if i != j:
+                augmented[j] -= augmented[i] * augmented[j, i]
+
+    return augmented[:, n:]
+
+
 def print_(name, tensor):
     tensor = tensor.detach().cpu().numpy()
     print(name, tensor, tensor.shape)

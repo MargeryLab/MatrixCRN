@@ -80,7 +80,7 @@ import os
 # os.environ["CUDA_VISIBLE_DEVICES"] = '1'
 import torch
 import torch.nn as nn
-from thop import profile
+# from thop import profile
 from utils.torch_dist import synchronize
 
 from exps.base_cli import run_cli

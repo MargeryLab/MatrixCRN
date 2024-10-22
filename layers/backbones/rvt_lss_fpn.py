@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import torch
 import torch.nn as nn
+from utils.basic import matrix_inverse
 from torch.cuda.amp.autocast_mode import autocast
 
 from mmdet.models.backbones.resnet import BasicBlock
@@ -164,7 +165,7 @@ class DepthNet(nn.Module):
 
 
 class RVTLSSFPN(BaseLSSFPN):
-    def __init__(self, **kwargs):
+    def __init__(self, export_onnx=False, **kwargs):
         super(RVTLSSFPN, self).__init__(**kwargs)
 
         self.register_buffer('frustum', self.create_frustum())
@@ -177,6 +178,7 @@ class RVTLSSFPN(BaseLSSFPN):
         self.view_aggregation_net = ViewAggregation(self.output_channels*2,
                                                     self.output_channels*2,
                                                     self.output_channels)
+        self.export_onnx = export_onnx
 
     def _configure_depth_net(self, depth_net_conf):
         return DepthNet(
@@ -229,7 +231,7 @@ class RVTLSSFPN(BaseLSSFPN):
     #                         points[:, :, :, :, :, 2:]), -1).double().unsqueeze(-1)
         
     #     # From image space to ego space
-    #     combine = sensor2ego_mat.matmul(torch.inverse(intrin_mat)).double()
+    #     combine = sensor2ego_mat.matmul(matrix_inverse(intrin_mat)).double()
     #     points = combine.view(batch_size, num_cams, 1, 1, 1, 4, 4).matmul(points).half()
 
     #     # Apply body transformation if provided
@@ -250,7 +252,7 @@ class RVTLSSFPN(BaseLSSFPN):
         batch_size, num_cams, _, _ = sensor2ego_mat.shape
         points = self.frustum  # (D, H, W, 3)
         ida_mat = ida_mat.view(batch_size, num_cams, 1, 1, 1, 4, 4)
-        points = ida_mat.inverse().matmul(points.unsqueeze(-1)).squeeze(-1).to(torch.float32)
+        points = matrix_inverse(ida_mat).matmul(points.unsqueeze(-1)).squeeze(-1).to(torch.float32)
         _, _, z_dim, y_dim, x_dim, _ = points.shape
         
         undistorted_points_all = torch.zeros((batch_size, num_cams, 1, y_dim, x_dim, 2), device=points.device, dtype=points.dtype)
@@ -274,7 +276,7 @@ class RVTLSSFPN(BaseLSSFPN):
                             points[:, :, :, :, :, 2:, :]), 5).double()
         
         # From image space to ego space
-        combine = sensor2ego_mat.matmul(torch.inverse(intrin_mat)).double()
+        combine = sensor2ego_mat.matmul(matrix_inverse(intrin_mat)).double()
         points = combine.view(batch_size, num_cams, 1, 1, 1, 4, 4).matmul(points).half()
 
         # Apply body transformation if provided
@@ -299,13 +301,13 @@ class RVTLSSFPN(BaseLSSFPN):
         # B x N x D x H x W x 3
         points = self.frustum #(70,32,48,4)
         ida_mat = ida_mat.view(batch_size, num_cams, 1, 1, 1, 4, 4) #(2,6,4,4)->(2,6,1,1,1,4,4)
-        points = ida_mat.inverse().matmul(points.unsqueeze(-1)).double() #(2,6,1,1,1,4,4)*(70,32,48,4,1)->(2,6,70,32,48,4,1)
+        points = matrix_inverse(ida_mat).matmul(points.unsqueeze(-1)).double() #(2,6,1,1,1,4,4)*(70,32,48,4,1)->(2,6,70,32,48,4,1)
         # cam_to_ego
         points = torch.cat(
             (points[:, :, :, :, :, :2] * points[:, :, :, :, :, 2:3],
              points[:, :, :, :, :, 2:]), 5)
 
-        combine = sensor2ego_mat.matmul(torch.inverse(intrin_mat)).double() #(2,6,4,4)
+        combine = sensor2ego_mat.matmul(matrix_inverse(intrin_mat)).double() #(2,6,4,4)
         points = combine.view(batch_size, num_cams, 1, 1, 1, 4,
                               4).matmul(points).half() #(2,6,1,1,1,4,4)*(2,6,70,32,48,4,1)->(2,6,70,32,48,4,1)
         if bda_mat is not None:
@@ -452,9 +454,11 @@ class RVTLSSFPN(BaseLSSFPN):
         geom_xyz = ((geom_xyz - (self.voxel_coord - self.voxel_size / 2.0)) /
                     self.voxel_size).int()
         geom_xyz[..., 2] = 0  # collapse z-axis
-        geo_pos = torch.ones_like(geom_xyz)
+        if self.export_onnx:
+            return geom_xyz, fused_context.contiguous()
         
         # sparse voxel pooling, 将点或特征映射到离散的体素网格中，并在每个体素内计算特征的平均值
+        geo_pos = torch.ones_like(geom_xyz)
         feature_map, _ = average_voxel_pooling(geom_xyz, fused_context.contiguous(), geo_pos,
                                                self.voxel_num.cuda())
         if self.times is not None:
@@ -524,12 +528,20 @@ class RVTLSSFPN(BaseLSSFPN):
             self.times['img'].append(t1.elapsed_time(t2))
 
         if num_sweeps == 1:
+            if self.export_onnx:
+                return key_frame_res[0], key_frame_res[1]
             if return_depth:
                 return key_frame_res[0].unsqueeze(1), key_frame_res[1], self.times
             else:
                 return key_frame_res.unsqueeze(1), self.times
 
-        key_frame_feature = key_frame_res[0] if return_depth else key_frame_res
+        if self.export_onnx:
+            geo_xyz_ls = [key_frame_res[0]]
+            key_frame_feature = key_frame_res[1]
+        elif return_depth:
+            key_frame_feature = key_frame_res[0]
+        else:
+            key_frame_feature = key_frame_res
         ret_feature_list = [key_frame_feature]
         for sweep_index in range(1, num_sweeps):
             with torch.no_grad():
@@ -540,8 +552,13 @@ class RVTLSSFPN(BaseLSSFPN):
                     ptss_context[:, sweep_index, ...] if ptss_context is not None else None,
                     ptss_occupancy[:, sweep_index, ...] if ptss_occupancy is not None else None,
                     return_depth=False)
+                if self.export_onnx:
+                    geo_xyz_ls.append(feature_map[0])
+                    feature_map = feature_map[1]
                 ret_feature_list.append(feature_map)
 
+        if self.export_onnx:
+            return torch.stack(geo_xyz_ls, 1), torch.stack(ret_feature_list, 1)
         if return_depth:
             return torch.stack(ret_feature_list, 1), key_frame_res[1], self.times
         else:

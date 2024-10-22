@@ -1,8 +1,10 @@
 # Copyright (c) Megvii Inc. All rights reserved.
 import torch
+import numpy as np
 from torch import nn
 import torch.nn.functional as F
 
+from utils.basic import matrix_inverse
 from mmcv.cnn import build_conv_layer
 from mmdet3d.models import build_neck
 from mmdet.models import build_backbone
@@ -319,9 +321,9 @@ class BaseLSSFPN(nn.Module):
     def create_frustum(self):
         """Generate frustum"""
         # make grid in image plane
-        ogfH, ogfW = self.final_dim
-        fH, fW = ogfH // self.downsample_factor, ogfW // self.downsample_factor
-        d_coords = torch.arange(*self.d_bound, # self.d_bound=[2.0, 58.0, 0.8],0.8为步长
+        ogfH, ogfW = self.final_dim #(512,768)
+        fH, fW = ogfH // self.downsample_factor, ogfW // self.downsample_factor#(32,48)
+        d_coords = torch.arange(*self.d_bound, # (70,32,48),self.d_bound=[2.0, 58.0, 0.8],0.8为步长
                                 dtype=torch.float).view(-1, 1,
                                                         1).expand(-1, fH, fW)
         D, _, _ = d_coords.shape # D=70=(58-2)/0.8
@@ -356,13 +358,13 @@ class BaseLSSFPN(nn.Module):
         # B x N x D x H x W x 3
         points = self.frustum
         ida_mat = ida_mat.view(batch_size, num_cams, 1, 1, 1, 4, 4)
-        points = ida_mat.inverse().matmul(points.unsqueeze(-1)).double()
+        points = matrix_inverse(ida_mat).matmul(points.unsqueeze(-1)).double()
         # cam_to_ego
         points = torch.cat(
             (points[:, :, :, :, :, :2] * points[:, :, :, :, :, 2:3],
              points[:, :, :, :, :, 2:]), 5)
 
-        combine = sensor2ego_mat.matmul(torch.inverse(intrin_mat)).double()
+        combine = sensor2ego_mat.matmul(matrix_inverse(intrin_mat)).double()
         points = combine.view(batch_size, num_cams, 1, 1, 1, 4,
                               4).matmul(points).half()
         if bda_mat is not None:

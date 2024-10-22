@@ -3,6 +3,7 @@ import os
 import torch
 import mmcv
 import numpy as np
+from utils.basic import matrix_inverse
 from PIL import Image
 from pyquaternion import Quaternion
 
@@ -544,7 +545,7 @@ class NuscDatasetRadarDet(Dataset):
                 keyego2global[3, 3] = 1
                 keyego2global[:3, :3] = keyego2global_rot
                 keyego2global[:3, -1] = keyego2global_tran
-                global2keyego = keyego2global.inverse()
+                global2keyego = matrix_inverse(keyego2global)
 
                 # cur ego to sensor
                 w, x, y, z = key_info[cam]['calibrated_sensor']['rotation']
@@ -556,10 +557,10 @@ class NuscDatasetRadarDet(Dataset):
                 keysensor2keyego[3, 3] = 1
                 keysensor2keyego[:3, :3] = keysensor2keyego_rot
                 keysensor2keyego[:3, -1] = keysensor2keyego_tran
-                keyego2keysensor = keysensor2keyego.inverse()
-                keysensor2sweepsensor = (
+                keyego2keysensor = matrix_inverse(keysensor2keyego)
+                keysensor2sweepsensor = matrix_inverse(
                     keyego2keysensor @ global2keyego @ sweepego2global
-                    @ sweepsensor2sweepego).inverse()
+                    @ sweepsensor2sweepego)
                 sweepsensor2keyego = global2keyego @ sweepego2global @\
                     sweepsensor2sweepego
                 sensor2ego_mats.append(sweepsensor2keyego)
@@ -695,7 +696,7 @@ class NuscDatasetRadarDet(Dataset):
                 keyego2global[3, 3] = 1
                 keyego2global[:3, :3] = keyego2global_rot
                 keyego2global[:3, -1] = keyego2global_tran
-                global2keyego = keyego2global.inverse()
+                global2keyego = matrix_inverse(keyego2global)
 
                 # cur ego to sensor
                 w, x, y, z = key_info[cam]['calibrated_sensor']['rotation']

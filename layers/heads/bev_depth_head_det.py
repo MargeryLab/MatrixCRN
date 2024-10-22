@@ -64,6 +64,7 @@ class BEVDepthHead(CenterHead):
         separate_head=dict(type='SeparateHead',
                            init_bias=-2.19,
                            final_kernel=3),
+        export_onnx=False
     ):
         super(BEVDepthHead, self).__init__(
             in_channels=in_channels,
@@ -83,6 +84,8 @@ class BEVDepthHead(CenterHead):
         self.min_radius = min_radius
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
+        
+        self.export_onnx = export_onnx
 
     @autocast(False)
     def forward(self, x, times=None):
@@ -130,6 +133,9 @@ class BEVDepthHead(CenterHead):
             times['head_head'].append(t2.elapsed_time(t3))
             times['head'].append(t1.elapsed_time(t3))
 
+        if self.export_onnx:
+            return ret_values
+        
         return ret_values, times
 
     def get_targets_single(self, gt_bboxes_3d, gt_labels_3d):

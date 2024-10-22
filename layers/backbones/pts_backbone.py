@@ -42,6 +42,7 @@ class PtsBackboneCamCoords(nn.Module):
                  pts_neck,
                  return_context=True,
                  return_occupancy=True,
+                 export_onnx=False,
                  **kwargs,
                  ):
         super(PtsBackboneCamCoords, self).__init__()
@@ -102,6 +103,8 @@ class PtsBackboneCamCoords(nn.Module):
             else:
                 occupancy_init = 0.01
             self.pred_occupancy[-1].bias.data.fill_(bias_init_with_prob(occupancy_init))
+            
+            self.export_onnx = export_onnx
 
     def voxelize(self, points):
         """Apply dynamic voxelization to points.
@@ -193,6 +196,8 @@ class PtsBackboneCamCoords(nn.Module):
             self.times['pts'].append(t1.elapsed_time(t2))
 
         if num_sweeps == 1:
+            if self.export_onnx:
+                return key_context, key_occupancy
             return key_context, key_occupancy, self.times
 
         context_list = [key_context]
@@ -209,6 +214,9 @@ class PtsBackboneCamCoords(nn.Module):
             ret_context = torch.cat(context_list, 1)
         if self.return_occupancy:
             ret_occupancy = torch.cat(occupancy_list, 1)
+        if self.export_onnx:
+            return ret_context, ret_occupancy
+        
         return ret_context, ret_occupancy, self.times
 
 

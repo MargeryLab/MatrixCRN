@@ -11,7 +11,7 @@ from ..modules.multimodal_deformable_cross_attention import DeformableCrossAtten
 
 class MFAFuser(nn.Module):
     def __init__(self, num_sweeps=4, img_dims=80, pts_dims=128, embed_dims=256,
-                 num_layers=6, num_heads=4, bev_shape=(128, 128)):
+                 num_layers=6, num_heads=4, bev_shape=(128, 128), export_onnx=False):
         super(MFAFuser, self).__init__()
 
         self.num_modalities = 2
@@ -90,6 +90,7 @@ class MFAFuser(nn.Module):
             nn.ReLU(inplace=True),
         )
 
+        self.export_onnx = export_onnx
         self.init_weights()
 
     def init_weights(self):
@@ -232,4 +233,7 @@ class MFAFuser(nn.Module):
                     feats[:, sweep_index, self.img_dims:self.img_dims+self.pts_dims])
                 ret_feature_list.append(feature_map)
 
+        if self.export_onnx:
+            return self.reduce_conv(torch.cat(ret_feature_list, 1)).float()
+        
         return self.reduce_conv(torch.cat(ret_feature_list, 1)).float(), self.times
