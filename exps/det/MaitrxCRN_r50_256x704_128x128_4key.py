@@ -240,7 +240,16 @@ class CRNLightningModel(BEVDepthLightningModel):
                 for key, value in mats.items():
                     mats[key] = value.cuda()
             if self.return_radar_pv:
-                radar_pts = radar_pts.cuda()
+                # voxelize radar points
+                num_sweeps = sweep_imgs.shape[1]
+                radar_voxels, radar_num_points, radar_coors = list(), list(), list()
+                B, N, P, F = pts_pv.shape
+                (sweep_imgs, mats, _, gt_boxes_3d, gt_labels_3d, _, depth_labels, pts_pv) = batch.contiguous().view(B*N, P, F)
+                for i in range(num_sweeps):
+                    voxels, num_points, coors = self.voxelize(pts_pv)
+                    radar_voxels.append(voxels.cuda())
+                    radar_num_points.append(num_points.cuda())
+                    radar_coors.append(coors.cuda())
             gt_boxes_3d = [gt_box.cuda() for gt_box in gt_boxes_3d]
             gt_labels_3d = [gt_label.cuda() for gt_label in gt_labels_3d]
         preds, depth_preds = self(sweep_imgs, mats,
@@ -276,7 +285,16 @@ class CRNLightningModel(BEVDepthLightningModel):
                 for key, value in mats.items():
                     mats[key] = value.cuda()
             if self.return_radar_pv:
-                radar_pts = radar_pts.cuda()
+                # voxelize radar points
+                num_sweeps = sweep_imgs.shape[1]
+                radar_voxels, radar_num_points, radar_coors = list(), list(), list()
+                B, N, P, F = pts_pv.shape
+                (sweep_imgs, mats, _, gt_boxes_3d, gt_labels_3d, _, depth_labels, pts_pv) = batch.contiguous().view(B*N, P, F)
+                for i in range(num_sweeps):
+                    voxels, num_points, coors = self.voxelize(pts_pv)
+                    radar_voxels.append(voxels.cuda())
+                    radar_num_points.append(num_points.cuda())
+                    radar_coors.append(coors.cuda())
             gt_boxes_3d = [gt_box.cuda() for gt_box in gt_boxes_3d]
             gt_labels_3d = [gt_label.cuda() for gt_label in gt_labels_3d]
         with torch.no_grad():

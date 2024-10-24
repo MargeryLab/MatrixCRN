@@ -12,6 +12,7 @@ from pytorch_lightning.core import LightningModule
 from torch.cuda.amp.autocast_mode import autocast
 from torch.optim.lr_scheduler import MultiStepLR
 from mmcv.runner import build_optimizer
+from mmcv.ops import Voxelization
 
 from datasets.nusc_det_dataset import NuscDatasetRadarDet, collate_fn
 from evaluators.det_evaluators import DetNuscEvaluator
@@ -99,7 +100,53 @@ CLASSES = [
     'CAR','VAN', 'TRUCK', 'BUS', 'ULTRA_VEHICLE', 'CYCLIST', 'TRICYCLIST', 'PEDESTRIAN', 'ANIMAL', 
     'UNKNOWN_MOVABLE', 'ROAD_FENCE', 'TRAFFIC_CONE', 'WATER_FILED_BARRIER', 'LIFTING_LEVERS', 'PILLAR', 'OTHER_BLOCKS',
     ]
-
+################################################
+backbone_pts_conf = {
+    'pts_voxel_layer': dict(
+        max_num_points=8,
+        voxel_size=[8, 0.4, 2],
+        point_cloud_range=[0, 2.0, 0, 768, 58.0, 2],
+        max_voxels=(768, 1024)
+    ),
+    'pts_voxel_encoder': dict(
+        type='PillarFeatureNet',
+        in_channels=4,
+        feat_channels=[32, 64],
+        with_distance=False,
+        with_cluster_center=False,
+        with_voxel_center=True,
+        voxel_size=[8, 0.4, 2],
+        point_cloud_range=[0, 2.0, 0, 768, 58.0, 2],
+        norm_cfg=dict(type='BN1d', eps=1e-3, momentum=0.01),
+        legacy=True
+    ),
+    'pts_middle_encoder': dict(
+        type='PointPillarsScatter',
+        in_channels=64,
+        output_shape=(140, 96)
+    ),
+    'pts_backbone': dict(
+        type='SECOND',
+        in_channels=64,
+        out_channels=[64, 128, 256],
+        layer_nums=[3, 5, 5],
+        layer_strides=[1, 2, 2],
+        norm_cfg=dict(type='BN', eps=1e-3, momentum=0.01),
+        conv_cfg=dict(type='Conv2d', bias=True, padding_mode='reflect')
+    ),
+    'pts_neck': dict(
+        type='SECONDFPN',
+        in_channels=[64, 128, 256],
+        out_channels=[128, 128, 128],
+        upsample_strides=[0.5, 1, 2],
+        norm_cfg=dict(type='BN', eps=1e-3, momentum=0.01),
+        upsample_cfg=dict(type='deconv', bias=False),
+        use_conv_for_no_stride=True
+    ),
+    'occupancy_init': 0.01,
+    'out_channels_pts': 80,
+}
+################################################
 head_conf = {
     'bev_backbone_conf': dict(
         type='ResNet',
@@ -177,6 +224,7 @@ class BEVDepthLightningModel(LightningModule):
                  batch_size_per_device=8,
                  class_names=CLASSES,
                  backbone_img_conf=backbone_img_conf,
+                 backbone_pts_conf=backbone_pts_conf,
                  head_conf=head_conf,
                  ida_aug_conf=ida_aug_conf,
                  bda_aug_conf=bda_aug_conf,
@@ -204,10 +252,13 @@ class BEVDepthLightningModel(LightningModule):
         self.rda_aug_conf = rda_aug_conf
         mmcv.mkdir_or_exist(default_root_dir)
         self.default_root_dir = default_root_dir
-        # self.evaluator = DetNuscEvaluator(class_names=self.class_names,
-        #                                   data_root=data_root,
-        #                                   version='v1.0-trainval',
-        #                                   output_dir=self.default_root_dir)
+        self.backbone_pts_conf = backbone_pts_conf
+        pts_voxel_layer = self.backbone_pts_conf["pts_voxel_layer"]
+        self.pts_voxel_layer = Voxelization(**pts_voxel_layer)
+        self.evaluator = DetNuscEvaluator(class_names=self.class_names,
+                                          data_root=data_root,
+                                          version='v1.0-trainval',
+                                          output_dir=self.default_root_dir)
         self.model = BaseBEVDepth(self.backbone_img_conf,
                                   self.head_conf)
         self.mode = 'valid'
@@ -238,6 +289,34 @@ class BEVDepthLightningModel(LightningModule):
     def forward(self, sweep_imgs, mats, is_train=False, **inputs):
         return self.model(sweep_imgs, mats, is_train=is_train)
 
+    def voxelize(self, points):
+        """Apply dynamic voxelization to points.
+
+        Args:
+            points (list[torch.Tensor]): Points of each sample.
+
+        Returns:
+            tuple[torch.Tensor]: Concatenated points, number of points
+                per voxel, and coordinates.
+        """
+        voxels, coors, num_points = [], [], []
+        batch_size, _, _ = points.shape
+        points_list = [points[i] for i in range(batch_size)]
+
+        for res in points_list:
+            res_voxels, res_coors, res_num_points = self.pts_voxel_layer(res) #(78,8,5), (78,3), (78), 78个voxel，每个voxel最多8个点，5为特征维度
+            voxels.append(res_voxels)
+            coors.append(res_coors)
+            num_points.append(res_num_points)
+        voxels = torch.cat(voxels, dim=0)
+        num_points = torch.cat(num_points, dim=0)
+        coors_batch = []
+        for i, coor in enumerate(coors): #(32,3)
+            coor_pad = F.pad(coor, (1, 0), mode='constant', value=i)
+            coors_batch.append(coor_pad)
+        coors_batch = torch.cat(coors_batch, dim=0)
+        return voxels, num_points, coors_batch
+
     def training_step(self, batch):
         if self.global_rank == 0:
             for pg in self.trainer.optimizers[0].param_groups:
@@ -250,11 +329,22 @@ class BEVDepthLightningModel(LightningModule):
                 for key, value in mats.items():
                     mats[key] = value.cuda()
             if self.return_radar_pv:
-                pts_pv = pts_pv.cuda()
+                # voxelize radar points
+                num_sweeps = sweep_imgs.shape[1]
+                radar_voxels, radar_num_points, radar_coors = list(), list(), list()
+                B, N, P, F = pts_pv.shape
+                (sweep_imgs, mats, _, gt_boxes_3d, gt_labels_3d, _, depth_labels, pts_pv) = batch.contiguous().view(B*N, P, F)
+                for i in range(num_sweeps):
+                    voxels, num_points, coors = self.voxelize(pts_pv)
+                    radar_voxels.append(voxels.cuda())
+                    radar_num_points.append(num_points.cuda())
+                    radar_coors.append(coors.cuda())
             gt_boxes_3d = [gt_box.cuda() for gt_box in gt_boxes_3d]
             gt_labels_3d = [gt_label.cuda() for gt_label in gt_labels_3d]
         preds, depth_preds = self(sweep_imgs, mats,
-                                  pts_pv=pts_pv,
+                                  radar_voxels=radar_voxels,
+                                  radar_num_points=radar_num_points,
+                                  radar_coors=radar_coors,
                                   is_train=True)
         targets = self.model.get_targets(gt_boxes_3d, gt_labels_3d)
         loss_detection, loss_heatmap, loss_bbox = self.model.loss(targets, preds)
@@ -322,16 +412,28 @@ class BEVDepthLightningModel(LightningModule):
         return gt_depths.float()
 
     def eval_step(self, batch, batch_idx, prefix: str):
-        (sweep_imgs, mats, img_metas, _, _, _, _, radar_pts) = batch
+        (sweep_imgs, mats, img_metas, _, _, _, _, pts_pv) = batch
         if torch.cuda.is_available():
             if self.return_image:
                 sweep_imgs = sweep_imgs.cuda()
                 for idx, value in enumerate(mats):
                     mats[idx] = value.cuda()
             if self.return_radar_pv:
-                radar_pts = radar_pts.cuda()
+                # voxelize radar points
+                num_sweeps = sweep_imgs.shape[1]
+                radar_voxels, radar_num_points, radar_coors = list(), list(), list()
+                for i in range(num_sweeps):
+                    pts = pts_pv[:, i, ...]
+                    B, N, P, F = pts.shape
+                    pts = pts.contiguous().view(B*N, P, F)
+                    voxels, num_points, coors = self.voxelize(pts)
+                    radar_voxels.append(voxels.cuda())
+                    radar_num_points.append(num_points.cuda())
+                    radar_coors.append(coors.cuda())
         preds = self(sweep_imgs, mats,
-                     pts_pv=radar_pts,
+                     radar_voxels=radar_voxels,
+                     radar_num_points=radar_num_points,
+                     radar_coors=radar_coors,
                      is_train=False)
         if isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
             results = self.model.module.get_bboxes(preds, img_metas)
@@ -363,19 +465,33 @@ class BEVDepthLightningModel(LightningModule):
 
     def validation_step(self, batch, batch_idx):
         (sweep_imgs, mats, _, gt_boxes_3d, gt_labels_3d, _, depth_labels, pts_pv) = batch
+        pts_pv = pts_pv.cuda()
         if torch.cuda.is_available():
             if self.return_image:
                 sweep_imgs = sweep_imgs.cuda()
                 for idx, value in enumerate(mats):
                     mats[idx] = value.cuda()
             if self.return_radar_pv:
-                pts_pv = pts_pv.cuda()
+                # voxelize radar points
+                num_sweeps = sweep_imgs.shape[1]
+                radar_voxels, radar_num_points, radar_coors = list(), list(), list()
+                for i in range(num_sweeps):
+                    pts = pts_pv[:, i, ...]
+                    B, N, P, F = pts.shape
+                    pts = pts.contiguous().view(B*N, P, F)
+                    voxels, num_points, coors = self.voxelize(pts)
+                    radar_voxels.append(voxels.cuda())
+                    radar_num_points.append(num_points.cuda())
+                    radar_coors.append(coors.cuda())
             gt_boxes_3d = [gt_box.cuda() for gt_box in gt_boxes_3d]
             gt_labels_3d = [gt_label.cuda() for gt_label in gt_labels_3d]
         with torch.no_grad():
             preds, depth_preds = self(sweep_imgs, mats,
-                                      pts_pv=pts_pv,
+                                      radar_voxels=radar_voxels,
+                                      radar_num_points=radar_num_points,
+                                      radar_coors=radar_coors,
                                       is_train=True)
+
             targets = self.model.get_targets(gt_boxes_3d, gt_labels_3d)
             loss_detection, loss_heatmap, loss_bbox = self.model.loss(targets, preds)
 

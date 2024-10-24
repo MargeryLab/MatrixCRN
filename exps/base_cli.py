@@ -8,7 +8,7 @@ from pytorch_lightning.callbacks.model_summary import ModelSummary
 from callbacks.ema import EMACallback
 from utils.torch_dist import all_gather_object, synchronize
 
-from .base_exp import BEVDepthLightningModel
+from exps.base_exp import BEVDepthLightningModel
 
 
 def run_cli(model_class=BEVDepthLightningModel,
@@ -37,7 +37,7 @@ def run_cli(model_class=BEVDepthLightningModel,
     parser = BEVDepthLightningModel.add_model_specific_args(parent_parser)
     parser.set_defaults(profiler='simple',
                         deterministic=False,
-                        amp_backend='native',
+                        # amp_backend='native',
                         # resume_from_checkpoint='/maggie.meng/code/CRN/outputs_zongmu/det/CRN_r50_256x704_128x128_4key/lightning_logs/version_2/checkpoints/epoch=0-step=22.ckpt',
                         max_epochs=30,
                         strategy='ddp',
@@ -52,8 +52,8 @@ def run_cli(model_class=BEVDepthLightningModel,
                         default_root_dir=os.path.join('/maggie.meng/code/CRN/outputs_zongmu/', exp_name))
     args = parser.parse_args()
     # args.e = args.evaluate = True
-    args.predict=args.p=True
-    args.gpus=1
+    # args.predict=args.p=True
+    # args.gpus=1
     if args.seed is not None:
         pl.seed_everything(args.seed)
 

@@ -3,7 +3,6 @@ import torch.nn.functional as F
 from torch import nn
 
 from mmcv.cnn import bias_init_with_prob
-from mmcv.ops import Voxelization
 from mmdet3d.models import builder
 
 
@@ -47,7 +46,6 @@ class PtsBackboneCamCoords(nn.Module):
                  ):
         super(PtsBackboneCamCoords, self).__init__()
 
-        self.pts_voxel_layer = Voxelization(**pts_voxel_layer)
         self.pts_voxel_encoder = builder.build_voxel_encoder(pts_voxel_encoder)
         self.pts_middle_encoder = builder.build_middle_encoder(pts_middle_encoder)
         self.pts_backbone = builder.build_backbone(pts_backbone)
@@ -106,53 +104,16 @@ class PtsBackboneCamCoords(nn.Module):
             
             self.export_onnx = export_onnx
 
-    def voxelize(self, points):
-        """Apply dynamic voxelization to points.
-
-        Args:
-            points (list[torch.Tensor]): Points of each sample.
-
-        Returns:
-            tuple[torch.Tensor]: Concatenated points, number of points
-                per voxel, and coordinates.
-        """
-        voxels, coors, num_points = [], [], []
-        batch_size, _, _ = points.shape
-        points_list = [points[i] for i in range(batch_size)]
-
-        for res in points_list:
-            res_voxels, res_coors, res_num_points = self.pts_voxel_layer(res) #(78,8,5), (78,3), (78), 78个voxel，每个voxel最多8个点，5为特征维度
-            voxels.append(res_voxels)
-            coors.append(res_coors)
-            num_points.append(res_num_points)
-        voxels = torch.cat(voxels, dim=0)
-        num_points = torch.cat(num_points, dim=0)
-        coors_batch = []
-        for i, coor in enumerate(coors): #(32,3)
-            coor_pad = F.pad(coor, (1, 0), mode='constant', value=i)
-            coors_batch.append(coor_pad)
-        coors_batch = torch.cat(coors_batch, dim=0)
-        return voxels, num_points, coors_batch
-
-    def _forward_single_sweep(self, pts):
+    def _forward_single_sweep(self, voxels, num_points, coors, batch_size=6):
         if self.times is not None:
             t1 = torch.cuda.Event(enable_timing=True)
             t2 = torch.cuda.Event(enable_timing=True)
             t3 = torch.cuda.Event(enable_timing=True)
             t4 = torch.cuda.Event(enable_timing=True)
-            t1.record()
-            torch.cuda.synchronize()
-
-        B, N, P, F = pts.shape #(1,6,1536,5)
-        batch_size = B * N
-        pts = pts.contiguous().view(B*N, P, F) #(6,1536,5)
-
-        voxels, num_points, coors = self.voxelize(pts)
-        if self.times is not None:
+            # t1.record()
             t2.record()
             torch.cuda.synchronize()
-            self.times['pts_voxelize'].append(t1.elapsed_time(t2))
-
+            
         voxel_features = self.pts_voxel_encoder(voxels, num_points, coors) #PillarFeatureNet
         x = self.pts_middle_encoder(voxel_features, coors, batch_size) #PointPillarsScatter(6,64,140,88)
         x = self.pts_backbone(x) #SECOND,(6,64,140,88),(6,128,70,44),(6,64,35,22)
@@ -178,7 +139,7 @@ class PtsBackboneCamCoords(nn.Module):
 
         return x_context, x_occupancy
 
-    def forward(self, ptss, times=None):
+    def forward(self, radar_voxels, radar_num_points, radar_coors, batch_size=6, num_sweeps=4, times=None):
         self.times = times
         if self.times is not None:
             t1 = torch.cuda.Event(enable_timing=True)
@@ -186,9 +147,8 @@ class PtsBackboneCamCoords(nn.Module):
             t1.record()
             torch.cuda.synchronize()
 
-        batch_size, num_sweeps, num_cams, _, _ = ptss.shape #(1,4,6,1536,5)
-
-        key_context, key_occupancy = self._forward_single_sweep(ptss[:, 0, ...]) #(6,1,80,70,44),(6,1,1,70,44)
+        key_context, key_occupancy = self._forward_single_sweep\
+            (radar_voxels[0], radar_num_points[0], radar_coors[0], batch_size=batch_size) #(6,1,80,70,44),(6,1,1,70,44)
         
         if self.times is not None:
             t2.record()
@@ -204,7 +164,8 @@ class PtsBackboneCamCoords(nn.Module):
         occupancy_list = [key_occupancy]
         for sweep_index in range(1, num_sweeps):
             with torch.no_grad():
-                context, occupancy = self._forward_single_sweep(ptss[:, sweep_index, ...])
+                context, occupancy = self._forward_single_sweep\
+                    (radar_voxels[sweep_index], radar_num_points[sweep_index], radar_coors[sweep_index], batch_size=batch_size)
                 context_list.append(context)
                 occupancy_list.append(occupancy)
 
@@ -259,7 +220,6 @@ class PtsBackbone(nn.Module):
                  ):
         super(PtsBackbone, self).__init__()
 
-        self.pts_voxel_layer = Voxelization(**pts_voxel_layer)
         self.pts_voxel_encoder = builder.build_voxel_encoder(pts_voxel_encoder)
         self.pts_middle_encoder = builder.build_middle_encoder(pts_middle_encoder)
         self.pts_backbone = builder.build_backbone(pts_backbone)
@@ -316,52 +276,15 @@ class PtsBackbone(nn.Module):
                 occupancy_init = 0.01
             self.pred_occupancy[-1].bias.data.fill_(bias_init_with_prob(occupancy_init))
 
-    def voxelize(self, points):
-        """Apply dynamic voxelization to points.
-
-        Args:
-            points (list[torch.Tensor]): Points of each sample.
-
-        Returns:
-            tuple[torch.Tensor]: Concatenated points, number of points
-                per voxel, and coordinates.
-        """
-        voxels, coors, num_points = [], [], []
-        batch_size, _, _ = points.shape
-        points_list = [points[i] for i in range(batch_size)]
-
-        for res in points_list:
-            res_voxels, res_coors, res_num_points = self.pts_voxel_layer(res) #(78,8,5), (78,3), (78), 78个voxel，每个voxel最多8个点，5为特征维度
-            voxels.append(res_voxels)
-            coors.append(res_coors)
-            num_points.append(res_num_points)
-        voxels = torch.cat(voxels, dim=0)
-        num_points = torch.cat(num_points, dim=0)
-        coors_batch = []
-        for i, coor in enumerate(coors): #(32,3)
-            coor_pad = F.pad(coor, (1, 0), mode='constant', value=i)
-            coors_batch.append(coor_pad)
-        coors_batch = torch.cat(coors_batch, dim=0)
-        return voxels, num_points, coors_batch
-
-    def _forward_single_sweep(self, pts):
+    def _forward_single_sweep(self, voxels, num_points, coors, batch_size=6):
         if self.times is not None:
             t1 = torch.cuda.Event(enable_timing=True)
             t2 = torch.cuda.Event(enable_timing=True)
             t3 = torch.cuda.Event(enable_timing=True)
             t4 = torch.cuda.Event(enable_timing=True)
-            t1.record()
-            torch.cuda.synchronize()
-
-        B, P, F = pts.shape
-        batch_size = B
-        pts = pts.contiguous().view(B, P, F) #(2,3500,7)
-
-        voxels, num_points, coors = self.voxelize(pts) #(3176,8,7)
-        if self.times is not None:
+            # t1.record()
             t2.record()
             torch.cuda.synchronize()
-            self.times['pts_voxelize'].append(t1.elapsed_time(t2))
 
         voxel_features = self.pts_voxel_encoder(voxels, num_points, coors) #PillarFeatureNet, (3188,64)
         x = self.pts_middle_encoder(voxel_features, coors, batch_size) #PointPillarsScatter(2,64,256,256)
@@ -388,7 +311,7 @@ class PtsBackbone(nn.Module):
 
         return x_context, x_occupancy
 
-    def forward(self, ptss, times=None):
+    def forward(self, radar_voxels, radar_num_points, radar_coors, times=None):
         self.times = times
         if self.times is not None:
             t1 = torch.cuda.Event(enable_timing=True)
@@ -396,9 +319,8 @@ class PtsBackbone(nn.Module):
             t1.record()
             torch.cuda.synchronize()
 
-        batch_size, num_sweeps, _, _ = ptss.shape #(2,4,1536,5)
-
-        key_context, key_occupancy = self._forward_single_sweep(ptss[:, 0, ...]) #(6,1,80,70,44),(6,1,1,70,44)
+        key_context, key_occupancy = self._forward_single_sweep\
+            (radar_voxels[0], radar_num_points[0], radar_coors[0], batch_size=batch_size) #(6,1,80,70,44),(6,1,1,70,44)
         
         if self.times is not None:
             t2.record()
@@ -412,7 +334,8 @@ class PtsBackbone(nn.Module):
         occupancy_list = [key_occupancy]
         for sweep_index in range(1, num_sweeps):
             with torch.no_grad():
-                context, occupancy = self._forward_single_sweep(ptss[:, sweep_index, ...])
+                context, occupancy = self._forward_single_sweep\
+                    (radar_voxels[sweep_index], radar_num_points[sweep_index], radar_coors[sweep_index], batch_size=batch_size)
                 context_list.append(context)
                 occupancy_list.append(occupancy)
 

@@ -286,17 +286,31 @@ class CRNLightningModel(BEVDepthLightningModel):
                 self.log('learning_rate', pg["lr"])
 
         (sweep_imgs, mats, _, gt_boxes_3d, gt_labels_3d, _, depth_labels, pts_pv) = batch
+        pts_pv = pts_pv.cuda()
         if torch.cuda.is_available():
             if self.return_image:
                 sweep_imgs = sweep_imgs.cuda()
-                for key, value in mats.items():
-                    mats[key] = value.cuda()
+                for idx, value in enumerate(mats):
+                    mats[idx] = value.cuda()
             if self.return_radar_pv:
-                pts_pv = pts_pv.cuda()
+                # voxelize radar points
+                num_sweeps = sweep_imgs.shape[1]
+                radar_voxels, radar_num_points, radar_coors = list(), list(), list()
+                for i in range(num_sweeps):
+                    pts = pts_pv[:, i, ...]
+                    B, N, P, F = pts.shape
+                    pts = pts.contiguous().view(B*N, P, F)
+                    voxels, num_points, coors = self.voxelize(pts)
+                    radar_voxels.append(voxels.cuda())
+                    radar_num_points.append(num_points.cuda())
+                    radar_coors.append(coors.cuda())
+                
             gt_boxes_3d = [gt_box.cuda() for gt_box in gt_boxes_3d]
             gt_labels_3d = [gt_label.cuda() for gt_label in gt_labels_3d]
         preds, depth_preds = self(sweep_imgs, mats,
-                                  pts_pv=pts_pv,
+                                  radar_voxels=radar_voxels,
+                                  radar_num_points=radar_num_points,
+                                  radar_coors=radar_coors,
                                   is_train=True)
         targets = self.model.get_targets(gt_boxes_3d, gt_labels_3d)
         loss_detection, loss_heatmap, loss_bbox = self.model.loss(targets, preds)
@@ -331,18 +345,31 @@ class CRNLightningModel(BEVDepthLightningModel):
 
     def validation_step(self, batch, batch_idx):
         (sweep_imgs, mats, _, gt_boxes_3d, gt_labels_3d, _, depth_labels, pts_pv) = batch
+        pts_pv = pts_pv.cuda()
         if torch.cuda.is_available():
             if self.return_image:
                 sweep_imgs = sweep_imgs.cuda()
-                for key, value in mats.items():
-                    mats[key] = value.cuda()
+                for idx, value in enumerate(mats):
+                    mats[idx] = value.cuda()
             if self.return_radar_pv:
-                pts_pv = pts_pv.cuda()
+                # voxelize radar points
+                num_sweeps = sweep_imgs.shape[1]
+                radar_voxels, radar_num_points, radar_coors = list(), list(), list()
+                for i in range(num_sweeps):
+                    pts = pts_pv[:, i, ...]
+                    B, N, P, F = pts.shape
+                    pts = pts.contiguous().view(B*N, P, F)
+                    voxels, num_points, coors = self.voxelize(pts)
+                    radar_voxels.append(voxels.cuda())
+                    radar_num_points.append(num_points.cuda())
+                    radar_coors.append(coors.cuda())
             gt_boxes_3d = [gt_box.cuda() for gt_box in gt_boxes_3d]
             gt_labels_3d = [gt_label.cuda() for gt_label in gt_labels_3d]
         with torch.no_grad():
             preds, depth_preds = self(sweep_imgs, mats,
-                                      pts_pv=pts_pv,
+                                      radar_voxels=radar_voxels,
+                                      radar_num_points=radar_num_points,
+                                      radar_coors=radar_coors,
                                       is_train=True)
 
             targets = self.model.get_targets(gt_boxes_3d, gt_labels_3d)

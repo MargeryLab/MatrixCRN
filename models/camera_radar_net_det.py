@@ -61,7 +61,9 @@ class CameraRadarNetDet(BaseBEVDepth):
     def forward(self,
                 sweep_imgs,
                 mats_dict,
-                sweep_ptss=None,
+                radar_voxels=None,
+                radar_num_points=None,
+                radar_coors=None,
                 is_train=False
                 ):
         """Forward function for BEVDepth
@@ -86,10 +88,12 @@ class CameraRadarNetDet(BaseBEVDepth):
         Returns:
             tuple(list[dict]): Output results for tasks.
         """
+        bs, num_sweeps, num_cam, _,_, _ = sweep_imgs.shape
+        pts_batch_size = bs * num_cam
         if is_train:
             self.time = None
-
-            ptss_context, ptss_occupancy, _ = self.backbone_pts(sweep_ptss)
+            ptss_context, ptss_occupancy, _ = self.backbone_pts(radar_voxels, radar_num_points, radar_coors, \
+                batch_size=pts_batch_size, num_sweeps=num_sweeps)
             feats, depth, _ = self.backbone_img(sweep_imgs,
                                                 mats_dict,
                                                 ptss_context,
@@ -99,7 +103,8 @@ class CameraRadarNetDet(BaseBEVDepth):
             preds, _ = self.head(fused)
             return preds, depth
         elif self.export_onnx:
-            ptss_context, ptss_occupancy = self.backbone_pts(sweep_ptss)
+            ptss_context, ptss_occupancy = self.backbone_pts(radar_voxels, radar_num_points, radar_coors, \
+                batch_size=pts_batch_size, num_sweeps=num_sweeps)
             feats = self.backbone_img(sweep_imgs,
                                         mats_dict,
                                         ptss_context,
@@ -114,8 +119,8 @@ class CameraRadarNetDet(BaseBEVDepth):
             elif self.idx == 100:
                 self.times = self.times_dict
 
-            ptss_context, ptss_occupancy, self.times = self.backbone_pts(sweep_ptss,
-                                                                         times=self.times)
+            ptss_context, ptss_occupancy, self.times = self.backbone_pts(radar_voxels, radar_num_points, radar_coors, \
+                batch_size=pts_batch_size, num_sweeps=num_sweeps, times=self.times)
             feats, self.times = self.backbone_img(sweep_imgs,
                                                   mats_dict,
                                                   ptss_context,
