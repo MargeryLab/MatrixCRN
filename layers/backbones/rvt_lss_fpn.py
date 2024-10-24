@@ -446,7 +446,7 @@ class RVTLSSFPN(BaseLSSFPN):
         img_context = self._split_batch_cam(img_context, num_cams=num_cams) #(12,80,70,1,44)
         img_context = img_context.permute(0, 1, 3, 4, 5, 2).contiguous() #(2,6,70,1,44,80)
 
-        pts_context = self._split_batch_cam(pts_context, num_cams=num_cams) #(12,80,70,44)
+        pts_context = self._split_batch_cam(pts_context, num_cams=num_cams) #(10,80,70,44)->(2,5,80,70,48)
         pts_context = pts_context.unsqueeze(-2).permute(0, 1, 3, 4, 5, 2).contiguous() #(2,6,70,1,44,80)
 
         fused_context = torch.cat([img_context, pts_context], dim=-1) #（2,6,70,1,44,160）
@@ -562,4 +562,4 @@ class RVTLSSFPN(BaseLSSFPN):
         if return_depth:
             return torch.stack(ret_feature_list, 1), key_frame_res[1], self.times
         else:
-            return torch.stack(ret_feature_list, 1), self.times
+            return torch.stack(ret_feature_list, 1), self.times #(2,4,160,128,128)

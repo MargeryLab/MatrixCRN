@@ -236,4 +236,4 @@ class MFAFuser(nn.Module):
         if self.export_onnx:
             return self.reduce_conv(torch.cat(ret_feature_list, 1)).float()
         
-        return self.reduce_conv(torch.cat(ret_feature_list, 1)).float(), self.times
+        return self.reduce_conv(torch.cat(ret_feature_list, 1)).float(), self.times # (2,512,128,128)->(2,128,128,128)

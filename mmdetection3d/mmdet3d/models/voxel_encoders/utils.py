@@ -6,6 +6,17 @@ from torch import nn
 from torch.nn import functional as F
 
 
+class no_jit_trace:
+    def __enter__(self):
+        # pylint: disable=protected-access
+        self.state = torch._C._get_tracing_state()
+        torch._C._set_tracing_state(None)
+
+    def __exit__(self, *args):
+        torch._C._set_tracing_state(self.state)
+        self.state = None
+
+
 def get_paddings_indicator(actual_num, max_num, axis=0):
     """Create boolean mask by actually number of a padded tensor.
 
@@ -135,7 +146,7 @@ class PFNLayer(nn.Module):
         if not self.last_vfe:
             out_channels = out_channels // 2
         self.units = out_channels
-
+        self.bn = nn.BatchNorm1d(in_channels)
         self.norm = build_norm_layer(norm_cfg, self.units)[1]
         self.linear = nn.Linear(in_channels, self.units, bias=False)
 
@@ -143,7 +154,7 @@ class PFNLayer(nn.Module):
         self.mode = mode
 
     @auto_fp16(apply_to=('inputs'), out_fp32=True)
-    def forward(self, inputs, num_voxels=None, aligned_distance=None):
+    def forward(self, inputs, num_voxels=None, aligned_distance=None, export=False):
         """Forward function.
 
         Args:
@@ -158,25 +169,45 @@ class PFNLayer(nn.Module):
         Returns:
             torch.Tensor: Features of Pillars.
         """
-        x = self.linear(inputs)
-        x = self.norm(x.permute(0, 2, 1).contiguous()).permute(0, 2,
-                                                               1).contiguous()
-        x = F.relu(x)
+        if export==False:
+            torch.backends.cudnn.enabled = False
+            x = self.bn(inputs.permute(0, 2, 1).contiguous()).permute(0, 2, 1).contiguous()
+            torch.backends.cudnn.enabled = True
+            
+            x = self.linear(x)
+            torch.backends.cudnn.enabled = False
+            x = self.norm(x.permute(0, 2, 1).contiguous()).permute(0, 2, 1).contiguous()
+            torch.backends.cudnn.enabled = True
+            x = F.relu(x)
 
-        if self.mode == 'max':
-            if aligned_distance is not None:
-                x = x.mul(aligned_distance.unsqueeze(-1))
-            x_max = torch.max(x, dim=1, keepdim=True)[0]
-        elif self.mode == 'avg':
-            if aligned_distance is not None:
-                x = x.mul(aligned_distance.unsqueeze(-1))
-            x_max = x.sum(
-                dim=1, keepdim=True) / num_voxels.type_as(inputs).view(
-                    -1, 1, 1)
+            if self.mode == 'max':
+                if aligned_distance is not None:
+                    x = x.mul(aligned_distance.unsqueeze(-1))
+                x_max = torch.max(x, dim=1, keepdim=True)[0]
+            elif self.mode == 'avg':
+                if aligned_distance is not None:
+                    x = x.mul(aligned_distance.unsqueeze(-1))
+                x_max = x.sum(
+                    dim=1, keepdim=True) / num_voxels.type_as(inputs).view(
+                        -1, 1, 1)
 
-        if self.last_vfe:
-            return x_max
+            if self.last_vfe:
+                return x_max
+            else:
+                x_repeat = x_max.repeat(1, inputs.shape[1], 1)
+                x_concatenated = torch.cat([x, x_repeat], dim=2)
+                return x_concatenated
         else:
-            x_repeat = x_max.repeat(1, inputs.shape[1], 1)
-            x_concatenated = torch.cat([x, x_repeat], dim=2)
-            return x_concatenated
+            with no_jit_trace():
+                merge_weight = ((1 / torch.sqrt(self.bn.running_var.double() + self.bn.eps) * self.bn.weight.double()).view(1, -1) * self.linear.weight.double() / torch.sqrt(self.norm.running_var.double() + self.norm.eps).view(-1, 1) * self.norm.weight.double().view(-1, 1)).float()
+                merge_bias   = (((self.linear.weight.double() @ (-self.bn.running_mean.double() / torch.sqrt(self.bn.running_var.double() + self.bn.eps) * self.bn.weight.double() + self.bn.bias.double()).view(-1, 1))[:, 0] - self.norm.running_mean.double()) / torch.sqrt(self.norm.running_var.double() + self.norm.eps) * self.norm.weight.double() + self.norm.bias.double()).float()
+            x = F.linear(inputs, merge_weight, merge_bias) 
+            x = F.relu(x)
+
+            if self.last_vfe:
+                return torch.max(x, dim=1)[0]
+            else:
+                x_max = torch.max(x, dim=1, keepdim=True)[0]
+                x_repeat = x_max.repeat(1, inputs.shape[1], 1)
+                x_concatenated = torch.cat([x, x_repeat], dim=2)
+                return x_concatenated            

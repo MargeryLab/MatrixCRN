@@ -91,7 +91,7 @@ class PillarFeatureNet(nn.Module):
         self.point_cloud_range = point_cloud_range
 
     @force_fp32(out_fp16=True)
-    def forward(self, features, num_points, coors):
+    def forward(self, features, num_points, coors, do_pfn=True):
         """Forward function.
 
         Args:
@@ -153,8 +153,9 @@ class PillarFeatureNet(nn.Module):
         mask = torch.unsqueeze(mask, -1).type_as(features)
         features *= mask
 
-        for pfn in self.pfn_layers:
-            features = pfn(features, num_points) # (3176,8,10), (3176)
+        if do_pfn:
+            for pfn in self.pfn_layers:
+                features = pfn(features, num_points) # (3176,8,10), (3176)
 
         return features.squeeze(1) # (3176,64)
 

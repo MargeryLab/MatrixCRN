@@ -33,7 +33,7 @@ def run_cli(model_class=BEVDepthLightningModel,
                                default=0,
                                help='seed for initializing training.')
     parent_parser.add_argument('--ckpt_path', 
-                               default='/maggie.meng/code/CRN/outputs_zongmu/det/CRN_r50_256x704_128x128_4key/lightning_logs/version_20_onnx/checkpoints/epoch=29-step=1110.ckpt', type=str)
+                               default='/maggie.meng/code/CRN/outputs_zongmu/CRN_r50_256x704_128x128_4key.pth', type=str)
     parser = BEVDepthLightningModel.add_model_specific_args(parent_parser)
     parser.set_defaults(profiler='simple',
                         deterministic=False,
