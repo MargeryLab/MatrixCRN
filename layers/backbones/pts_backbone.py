@@ -147,11 +147,11 @@ class PtsBackboneCamCoords(nn.Module):
             t2.record()
             torch.cuda.synchronize()
             
-        voxel_features = self.pts_voxel_encoder(voxels, num_points, coors) #PillarFeatureNet
-        x = self.pts_middle_encoder(voxel_features, coors, batch_size) #PointPillarsScatter(6,64,140,88)
-        x = self.pts_backbone(x) #SECOND,(6,64,140,88),(6,128,70,44),(6,64,35,22)
+        voxel_features = self.pts_voxel_encoder(voxels, num_points, coors) #PillarFeatureNet, (2813,64)
+        x = self.pts_middle_encoder(voxel_features, coors, batch_size) #PointPillarsScatter(10,64,140,88)
+        x = self.pts_backbone(x) #SECOND,(10,64,140,88),(10,128,70,44),(10,64,35,22)
         if self.pts_neck is not None:
-            x = self.pts_neck(x) #SECONDFPN, (6,384,70,44)
+            x = self.pts_neck(x) #SECONDFPN, (10,384,70,44)
 
         if self.times is not None:
             t3.record()

@@ -6,17 +6,18 @@ import torch
 import torch.nn as nn
 
 from onnxsim import simplify
-
+from torch.onnx import OperatorExportTypes
+from torch.onnx.symbolic_helper import parse_args
 from models.camera_radar_net_det import CameraRadarNetDet
+from layers.modules.multimodal_deformable_cross_attention import DeformableCrossAttention
 from argparse import ArgumentParser
 
 from exps.base_exp import BEVDepthLightningModel
-from ptq_bev import quantize_net, fuse_conv_bn
+from ops.average_voxel_pooling_v2 import average_voxel_pooling
 
 
-os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
-MAX = 5000 * 4
-
+MAX = None
+NUM_SWEEPS = 1
 
 class no_jit_trace:
     def __enter__(self):
@@ -27,71 +28,177 @@ class no_jit_trace:
     def __exit__(self, *args):
         torch._C._set_tracing_state(self.state)
         self.state = None
-
-
-class Voxelization(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, points0, points1, points2, points3, bsizes):
-        with no_jit_trace():
-            return Voxelization.voxelize([points0, points1, points2, points3])
-    
-    @staticmethod
-    def symbolic(g, points0, points1, points2, points3, bsizes):
-        return g.op("Voxelization", points0, points1, points2, points3, bsizes, outputs=3)
+        
 
 class PillarsScatter(torch.autograd.Function):
     @staticmethod
+    @parse_args('v','v','v')
+    def symbolic(g, feats, coords, N):
+        return g.op('custom_domain::PillarsScatter',feats, coords, N)
+
+    @staticmethod
     def forward(ctx, feats, coords, N):
-        with no_jit_trace():
-            N = N[0, 0].item()
-            return PillarsScatter.pts_middle_encoder(feats[:N], coords.view(-1, 4)[:N], 4)
+        return PillarsScatter.pts_middle_encoder(feats[:N], coords[:N], 5)
     
     @staticmethod
-    def symbolic(g, feats, coords, N):
-        return g.op("PillarsScatter", feats, coords, N, W_i=128, H_i=128)
-            
-class TRTModel_pre(nn.Module):
+    def backward(ctx, grad_output):
+        pass   
+torch.onnx.register_custom_op_symbolic("custom_domain::PillarsScatter", PillarsScatter.symbolic, 9)
+
+
+def inverse_symbolic(g, input):
+    return g.op("com.microsoft::Inverse", input)
+torch.onnx.register_custom_op_symbolic("::inverse", inverse_symbolic, 9)
+
+
+def nonzero_symbolic(g, input):
+    return g.op("com.microsoft::NonZeroPlugin", input)
+torch.onnx.register_custom_op_symbolic("::nonzero", nonzero_symbolic, 9)
+
+
+class SubclassCenterHeadBBox(nn.Module):
+    def __init__(self, parent):
+        super().__init__()
+        self.parent = parent
+
+    @staticmethod
+    def get_bboxes(self, preds_dicts):
+        rets = []
+        for task_id, preds_dict in enumerate(preds_dicts):
+            batch_heatmap = preds_dict["heatmap"].sigmoid()
+
+            batch_reg = preds_dict["reg"]
+            batch_hei = preds_dict["height"]
+
+            if self.norm_bbox:
+                batch_dim = torch.exp(preds_dict["dim"])
+            else:
+                batch_dim = preds_dict["dim"]
+
+            if "vel" in preds_dict:
+                batch_vel = preds_dict["vel"]
+            else:
+                batch_vel = None
+            # (1,1,128,128),(1,2,...),(1,1,...),(1,3,..),(1,2,...), (1,2,128,128)
+            rets.extend([batch_heatmap, preds_dict["rot"], batch_hei, batch_dim, batch_vel, batch_reg])
+        return rets
+
+    def forward(self, x):
+        base_head = self.parent.head
+        trunk_outs = [x]
+        if base_head.trunk.deep_stem:
+            x = base_head.trunk.stem(x)
+        else:
+            x = base_head.trunk.conv1(x)
+            x = base_head.trunk.norm1(x)
+            x = base_head.trunk.relu(x)
+        for i, layer_name in enumerate(base_head.trunk.res_layers):
+            res_layer = getattr(base_head.trunk, layer_name)
+            x = res_layer(x)
+            if i in base_head.trunk.out_indices:
+                trunk_outs.append(x)
+        fpn_output = base_head.neck(trunk_outs)
+        assert len(fpn_output) == 1    
+        head_feat = fpn_output[0]
+        ret_dicts = []
+        head_feat = base_head.shared_conv(head_feat)
+        for task in base_head.task_heads:
+            ret_dicts.append(task(head_feat))
+        return SubclassCenterHeadBBox.get_bboxes(base_head, ret_dicts)
+                        
+class TRTModel(nn.Module):
     def __init__(self, model):
         super().__init__()
         self.model = model
+        self.head = SubclassCenterHeadBBox(model).cuda()
         
     def forward(self,
                 sweep_imgs,
-                mats_dict,
+                sensor2ego_mats, intrin_mats, ida_mats,
                 radar_voxels,
                 radar_num_points,
                 radar_coors,
                 is_train=False
                 ):
-        bs, num_sweeps, num_cam, _,_, _ = sweep_imgs.shape
-        pts_batch_size = bs * num_cam
-        ptss_context, ptss_occupancy = self.model.backbone_pts(radar_voxels, radar_num_points, radar_coors, \
-            batch_size=pts_batch_size, num_sweeps=num_sweeps)
+        bs, num_sweeps, num_cams, _,_, _ = sweep_imgs.shape
+        backbone_pts = self.model.backbone_pts
+        pfn_layers = backbone_pts.pts_voxel_encoder.pfn_layers
+        ret_context = []
+        ret_occupancy = []
+        # PillarsScatter.pts_middle_encoder = backbone_pts.pts_middle_encoder
+        for sweep_index in range(num_sweeps):
+            feats = pfn_layers[0](radar_voxels[sweep_index], export=True) #(5000,8,32)
+            feats = pfn_layers[1](feats, export=True) #(5000,8,64)
+            N = radar_num_points[sweep_index]
+            # radar_bev = PillarsScatter.apply(feats[:N], radar_coors[sweep_index][:N], 5)
+            radar_bev = backbone_pts.pts_middle_encoder(feats[:N], radar_coors[sweep_index][:N], 5)
+            x = backbone_pts.pts_backbone(radar_bev) #SECOND,(6,64,140,88),(6,128,70,44),(6,64,35,22)
+            if backbone_pts.pts_neck is not None:
+                x = backbone_pts.pts_neck(x) #SECONDFPN, (6,384,70,44)
+            if backbone_pts.return_context:
+                x_context = backbone_pts.pred_context(x[-1]).unsqueeze(1) #(6,1,80,70,44)
+            if backbone_pts.return_occupancy:
+                x_occupancy = backbone_pts.pred_occupancy(x[-1]).unsqueeze(1).sigmoid() #(6,,1,1,70,44)
+            ret_context.append(x_context)
+            ret_occupancy.append(x_occupancy)
         
-        feats = self.model.backbone_pts.pts_voxel_encoder.pfn_layers[0](radar_voxels.view(-1, 8, 7), export=True)
-        PillarsScatter.pts_middle_encoder = self.model.backbone_pts.pts_middle_encoder
-        radar_bev = PillarsScatter.apply(feats, radar_coors, radar_num_points)
+        ret_context = torch.cat(ret_context, 1)
+        ret_occupancy = torch.cat(ret_occupancy, 1)
         
-        with no_jit_trace():
-            N = 1
-            B, C, H, W = map(int, images.size())
+        backbone_img = self.model.backbone_img
+        feats = []
+        for sweep_index in range(num_sweeps):
+            img_feats = backbone_img.get_cam_feats(sweep_imgs[:, sweep_index:sweep_index + 1, ...]) 
+            source_features = img_feats[:, 0, ...] #(1,6,512,16,44)
+            source_features = backbone_img._split_batch_cam(source_features, inv=True, num_cams=num_cams) #(6,512,16,44)
 
-        # ptss_context, ptss_occupancy = torch.rand(5,1,80,70,48).cuda(), torch.rand(5,1,1,70,48).cuda()
-        geom_xyz, fused_context = self.model.backbone_img(sweep_imgs,
-                                            mats_dict,
-                                            ptss_context,
-                                            ptss_occupancy)
-        return geom_xyz, fused_context # (1,4,5,70,1,48,3), (1,4,5,70,1,48,160), 4 is sequence num, 5 is camera mum
-    
-class TRTModel_post(nn.Module):
-    def __init__(self, model) -> None:
-        super().__init__()
-        self.model = model
-        
-    def forward(self, feats):
+            depth_net = backbone_img.depth_net
+            x = depth_net.reduce_conv(source_features)
+            context = depth_net.context_conv(x)
+            depth = depth_net.depth_conv(x)
+            depth_feature = torch.cat([depth, context], dim=1)
+            image_feature = depth_feature[:, backbone_img.depth_channels:(backbone_img.depth_channels + backbone_img.output_channels)] #(12,80,16,44)
+
+            depth_occupancy = depth_feature[:, :backbone_img.depth_channels].softmax( #(12,70,16,44)
+                dim=1, dtype=depth_feature.dtype)
+            img_feat_with_depth = depth_occupancy.unsqueeze(1) * image_feature.unsqueeze(2) #(12,80,70,16,44)            
+            geom_xyz, geom_xyz_valid = backbone_img.get_geometry_collapsed( #(2,6,70,1,44,3),（2,6,70,16,44）
+                sensor2ego_mats[:, sweep_index, ...],
+                intrin_mats[:, sweep_index, ...],
+                ida_mats[:, sweep_index, ...],
+                None,
+            )
+            
+            geom_xyz_valid = backbone_img._split_batch_cam(geom_xyz_valid, inv=True, num_cams=num_cams).unsqueeze(1)#（12,1,70,16,44）
+            img_feat_with_depth = (img_feat_with_depth * geom_xyz_valid).sum(3).unsqueeze(3) #(12,80,70,16,44)->(12,80,70,1,44),可以将无效的体素特征置为零,y方向做了加和
+            radar_occupancy = ret_occupancy[:, sweep_index, ...].permute(0, 2, 1, 3).contiguous() #(6,70,1,44)
+            image_feature_collapsed = (image_feature * geom_xyz_valid.max(2).values).sum(2).unsqueeze(2) #(12,80,1,44)
+            img_feat_with_radar = radar_occupancy.unsqueeze(1) * image_feature_collapsed.unsqueeze(2)
+
+            img_context = torch.cat([img_feat_with_depth, img_feat_with_radar], dim=1)
+            img_context = backbone_img._forward_view_aggregation_net(img_context) #(12,80,70,1,44)
+            img_context = backbone_img._split_batch_cam(img_context, num_cams=num_cams) #(12,80,70,1,44)
+            img_context = img_context.permute(0, 1, 3, 4, 5, 2).contiguous() #(2,6,70,1,44,80)
+
+            pts_context = backbone_img._split_batch_cam(ret_context[:, sweep_index, ...], num_cams=num_cams) #(10,80,70,44)->(2,5,80,70,48)
+            pts_context = pts_context.unsqueeze(-2).permute(0, 1, 3, 4, 5, 2).contiguous() #(2,6,70,1,44,80)
+
+            fused_context = torch.cat([img_context, pts_context], dim=-1) #（2,6,70,1,44,160）
+
+            geom_xyz = ((geom_xyz - (backbone_img.voxel_coord - backbone_img.voxel_size / 2.0)) /
+                        backbone_img.voxel_size).int()
+            geom_xyz[..., 2] = 0  # collapse z-axis
+            
+            geo_pos = torch.ones_like(geom_xyz)
+            feature_map, _ = average_voxel_pooling(geom_xyz, fused_context.contiguous(), geo_pos,
+                                                backbone_img.voxel_num.cuda()) # (1,160,128,128)
+            feats.append(feature_map.contiguous())
+
+        feats = torch.stack(feats, 1)
         fused = self.model.fuser(feats)
-        # preds = self.model.head(fused)
-        return fused 
+        preds = self.head(fused)
+        return preds # length = 10*6
+
 
 def pad(x):
     t = torch.zeros(MAX, *x.shape[1:], dtype=x.dtype, device=x.device)
@@ -114,7 +221,7 @@ def run_cli(model_class=BEVDepthLightningModel,
                                default=False,
                                help='seed for initializing training.')
     parent_parser.add_argument('--ckpt_path', 
-                               default='/maggie.meng/code/CRN/outputs_zongmu/det/CRN_r50_256x704_128x128_4key/lightning_logs/version_22/checkpoints/epoch=0-step=37.ckpt', type=str)
+                               default='/maggie.meng/code/CRN/outputs_zongmu/det/CRN_r50_256x704_128x128_4key/lightning_logs/version_24/checkpoints/epoch=29-step=1110.ckpt', type=str)
     parser = BEVDepthLightningModel.add_model_specific_args(parent_parser)
     args = parser.parse_args()
     
@@ -123,80 +230,59 @@ def run_cli(model_class=BEVDepthLightningModel,
     model = model_class.load_from_checkpoint(args.ckpt_path).model
     model.cuda()
     model.eval()
-    
-    # seqs_time = 4
-    # sweep_imgs = torch.rand(1, seqs_time, 5, 3, 512, 768)
-    # mats = []
-    # mats.append(torch.rand(1, seqs_time, 5, 4, 4).cuda())
-    # mats.append(torch.rand(1, seqs_time, 5, 4, 4).cuda())
-    # mats.append(torch.rand(1, seqs_time, 5, 4).cuda())
-    # mats.append(torch.rand(1, seqs_time, 5, 4, 4).cuda())
-    # mats.append(torch.rand(1, seqs_time, 5, 4, 4).cuda())
-    # radar_voxels = [torch.rand(2636-i, 8, 4).cuda() for i in range(seqs_time)]
-    # radar_num_points = [torch.randint(0, 500, (500-i,)).cuda() for i in range(seqs_time)]
-    # radar_coors = [torch.randint(0, 50, (50-i, 4)).cuda() for i in range(seqs_time)]
 
     data_loader = model_engine.predict_dataloader()
-    post_onnx_path = os.path.dirname(args.ckpt_path) + '/crn_post.onnx'
-    pre_onnx_path = os.path.dirname(args.ckpt_path) + '/crn_pre.onnx'
+    merget_onnx_path = os.path.dirname(args.ckpt_path) + '/crn_merge.onnx'
 
-    trtModel_pre = TRTModel_pre(model)
-    trtModel_post = TRTModel_post(model)
+    trtModel = TRTModel(model).cuda()
     with torch.no_grad():
         for i, data in enumerate(data_loader):
             break
         (sweep_imgs, mats, _, gt_boxes_3d, gt_labels_3d, _, depth_labels, pts_pv) = data
-        for i, value in enumerate(mats):
-            mats[i] = value.cuda()
+        num_sweeps = NUM_SWEEPS
+        sweep_imgs = sweep_imgs[:,:num_sweeps,...]
+        global MAX
+        MAX = 5000 * num_sweeps
+        sensor2ego_mats = mats[0].cuda()[:,:num_sweeps, ...]
+        intrin_mats = mats[1].cuda()[:,:num_sweeps, ...]
+        ida_mats = mats[3].cuda()[:,:num_sweeps, ...]
         pts = pts_pv[:, 0, ...]
         B, N, P, F = pts.shape
         pts = pts.contiguous().view(B*N, P, F)
         voxels, num_points, coors = model_engine.voxelize(pts) #(1508,8,4), (1508),(1508,4)
-        N_points = torch.tensor([voxels.size(0)], dtype=torch.int32).view(1, 1).repeat(4, 1).cuda()
+        N_points = torch.tensor([voxels.size(0)], dtype=torch.int32).repeat(num_sweeps).cuda()
+        # N_points_value = voxels.size(0)  # 获取第一个维度的大小
+        # N_points = (torch.ones((num_sweeps,), dtype=torch.int32) * N_points_value).cuda()
         features = model.backbone_pts.pts_voxel_encoder(voxels, num_points, coors, do_pfn=False) #(1508,8,7)
-        voxels = pad(features).view(4, 5000, 8, 7)
-        coords = pad(coors).view(4, 5000, 4)
+        voxels = pad(features).view(num_sweeps, 5000, 8, 7).cuda()
+        coords = pad(coors).view(num_sweeps, 5000, 4).cuda()
             
-        pre_inputs = (sweep_imgs.cuda(), mats, voxels, N_points, coords)
-        output_names_pre = ['geom_xyz', 'fused_context']
-        # 生成动态轴
+        pre_inputs = (sweep_imgs.cuda(), sensor2ego_mats, intrin_mats, ida_mats, voxels, N_points, coords)
+        
         dynamic_axes = {
             'sweep_imgs': {1: 'n_sweeps'}, 
+            'sensor2ego_mats': {1: 'n_sweeps'},
+            'intrin_mats': {1: 'n_sweeps'},
+            'ida_mats': {1: 'n_sweeps'},
             'voxels': {0: 'n_sweeps'},
-            'num_points': {0: 'n_sweeps'},
-            'coords': {0: 'n_sweeps'}
+            'N_points': {0: 'n_sweeps'},
+            'coords': {0: 'n_sweeps'},
         }
         torch.onnx.export(
-            trtModel_pre,
+            trtModel,
             pre_inputs,
-            pre_onnx_path,
-            input_names=["sweep_imgs", "mats", "voxels", "num_points", "coords"],
-            output_names=output_names_pre,
-            dynamic_axes=dynamic_axes,
+            merget_onnx_path,
+            input_names=["sweep_imgs", "sensor2ego_mats", "intrin_mats", "ida_mats", "voxels", "N_points", "coords"],
+            output_names=[f'output_{j}' for j in range(6 * len(model.head.task_heads))],
+            # dynamic_axes=dynamic_axes,
             opset_version=13,
             do_constant_folding=True
         )
-        print(f"{pre_onnx_path} has saved.")
+        print(f"{merget_onnx_path} has saved.")
             
-            # voxel_num = (128,128,1)
-            # fused_context_channel = 160
-            # post_inputs = (torch.rand(1, 1, fused_context_channel, voxel_num[0], voxel_num[1]).cuda())
-            # output_names_post = [f'output_{j}' for j in range(6 * len(model.head.task_heads))]
-            # torch.onnx.export(
-            #             trtModel_post,
-            #             post_inputs,
-            #             post_onnx_path,
-            #             dynamic_axes = {'fused_context':{1: 'num_sweeps'}},
-            #             opset_version=13,
-            #             input_names=['fused_context',],
-            #             do_constant_folding=True,
-            #             # output_names=output_names_post
-            #             )
-            
-        print(f"finished, {post_onnx_path} has saved.")
         
-        pre_onnx_model = onnx.load(pre_onnx_path)
-        # post_onnx_model = onnx.load(post_onnx_path)
+        pre_onnx_model = onnx.load(merget_onnx_path)
+        # print(onnx.helper.printable_graph(pre_onnx_model.graph))
         try:
             onnx.checker.check_model(pre_onnx_model)
         except Exception:
@@ -205,12 +291,9 @@ def run_cli(model_class=BEVDepthLightningModel,
             print('ONNX Model Correct')
             
         pre_model_simp, pre_check = simplify(pre_onnx_model)
-        # post_model_simp, post_check = simplify(post_onnx_model)
         assert pre_check, "Simplified ONNX model could not be validated"
-        # assert post_check, "Simplified ONNX model could not be validated"
-        onnx.save(pre_model_simp, pre_onnx_path)
-        # onnx.save(post_model_simp, post_onnx_path)
-        # print("saved simplified onnx.")
+        onnx.save(pre_model_simp, merget_onnx_path)
+        print("saved simplified onnx.")
         
 
 

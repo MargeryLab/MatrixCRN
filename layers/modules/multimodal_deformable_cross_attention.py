@@ -11,7 +11,7 @@ import torch.nn as nn
 from mmcv.cnn import xavier_init, constant_init
 from mmcv.runner.base_module import BaseModule
 
-from .multi_scale_deformable_attn_function import MultiScaleDeformableAttnFunction_fp32
+from .multi_scale_deformable_attn_function import MultiScaleDeformableAttnFunction_fp32, Etmpy_MultiScaleDeformableAttnFunction
 
 
 class DeformableCrossAttention(BaseModule):
@@ -52,7 +52,8 @@ class DeformableCrossAttention(BaseModule):
                  im2col_step=64,
                  dropout=0.1,
                  norm_cfg=None,
-                 init_cfg=None):
+                 init_cfg=None,
+                 export_onnx=False):
         super().__init__(init_cfg)
         if embed_dims % num_heads != 0:
             raise ValueError(f'embed_dims must be divisible by num_heads, '
@@ -96,6 +97,8 @@ class DeformableCrossAttention(BaseModule):
         self.value_proj_pts = nn.Linear(pts_dims, embed_dims)
 
         self.init_weights()
+        
+        self.export_onnx = export_onnx
 
     def init_weights(self):
         """Default initialization for Parameters of Module."""
@@ -192,9 +195,16 @@ class DeformableCrossAttention(BaseModule):
             + sampling_offsets \
             / offset_normalizer[None, None, None, :, None, :]
 
-        output = MultiScaleDeformableAttnFunction_fp32.apply(
-            value, spatial_shapes, level_start_index, sampling_locations,
-            attention_weights, self.im2col_step)
+        if self.export_onnx:
+            output = Etmpy_MultiScaleDeformableAttnFunction.apply(
+                value, spatial_shapes, level_start_index, sampling_locations,
+                attention_weights, self.im2col_step)
+            _, num_queries, mum_heads, embed_dims_num_heads = output.shape
+            output = output.view(-1, num_queries, mum_heads*embed_dims_num_heads)
+        else:
+            output = MultiScaleDeformableAttnFunction_fp32.apply(
+                value, spatial_shapes, level_start_index, sampling_locations,
+                attention_weights, self.im2col_step)
 
         return self.dropout(output) + identity
 

@@ -53,7 +53,7 @@ def run_cli(model_class=BEVDepthLightningModel,
     args = parser.parse_args()
     # args.e = args.evaluate = True
     # args.predict=args.p=True
-    # args.gpus=1
+    args.gpus=1
     if args.seed is not None:
         pl.seed_everything(args.seed)
 

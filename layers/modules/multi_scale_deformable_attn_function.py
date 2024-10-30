@@ -12,6 +12,28 @@ ext_module = ext_loader.load_ext(
     '_ext', ['ms_deform_attn_backward', 'ms_deform_attn_forward'])
 
 
+class Etmpy_MultiScaleDeformableAttnFunction(torch.autograd.Function):
+    @staticmethod
+    def symbolic(g,value, value_spatial_shapes, value_level_start_index,
+                sampling_locations, attention_weights, im2col_step):
+
+        return g.op('com.microsoft::MultiscaleDeformableAttnPlugin_TRT',value, value_spatial_shapes, value_level_start_index,
+                    sampling_locations, attention_weights)
+
+    @staticmethod
+    def forward(ctx, value, value_spatial_shapes, value_level_start_index,
+                sampling_locations, attention_weights, im2col_step):
+        '''
+        no real mean,just for inference
+        '''
+        bs, _, mum_heads, embed_dims_num_heads = value.shape
+        bs ,num_queries, _, _, _, _ = sampling_locations.shape
+        return value.new_zeros(bs, num_queries, mum_heads, embed_dims_num_heads)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        pass   
+
 class MultiScaleDeformableAttnFunction_fp16(Function):
 
     @staticmethod

@@ -75,7 +75,8 @@ class MFAFuser(nn.Module):
                     embed_dims=self.embed_dims,
                     num_heads=self.num_heads,
                     num_modalities=self.num_modalities,
-                    num_points=4
+                    num_points=4,
+                    export_onnx=export_onnx
                 ),
             )
 
@@ -202,7 +203,7 @@ class MFAFuser(nn.Module):
             torch.cuda.synchronize()
             self.times['fusion_post'].append(t3.elapsed_time(t4))
 
-        return output
+        return output # (1,128,128,128)
 
     def forward(self, feats, times=None): #(2,4,80,128,128)
         self.times = times
@@ -223,6 +224,8 @@ class MFAFuser(nn.Module):
             self.times['fusion'].append(t1.elapsed_time(t2))
 
         if num_sweeps == 1:
+            if self.export_onnx:
+                return key_frame_res
             return key_frame_res, self.times
 
         ret_feature_list = [key_frame_res]

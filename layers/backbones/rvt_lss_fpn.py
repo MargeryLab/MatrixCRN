@@ -293,6 +293,35 @@ class RVTLSSFPN(BaseLSSFPN):
 
         return points_out, points_valid_z
     
+    def get_geometry_collapsed_raw(self, sensor2ego_mat, intrin_mat, ida_mat, bda_mat,
+                               z_min=-5., z_max=3.):
+        batch_size, num_cams, _, _ = sensor2ego_mat.shape
+
+        # undo post-transformation
+        # B x N x D x H x W x 3
+        points = self.frustum
+        ida_mat = ida_mat.view(batch_size, num_cams, 1, 1, 1, 4, 4)
+        points = ida_mat.inverse().matmul(points.unsqueeze(-1)).double()
+        # cam_to_ego
+        points = torch.cat(
+            (points[:, :, :, :, :, :2] * points[:, :, :, :, :, 2:3],
+             points[:, :, :, :, :, 2:]), 5)
+
+        combine = sensor2ego_mat.matmul(torch.inverse(intrin_mat)).double()
+        points = combine.view(batch_size, num_cams, 1, 1, 1, 4,
+                              4).matmul(points).half()
+        if bda_mat is not None:
+            bda_mat = bda_mat.unsqueeze(1).repeat(1, num_cams, 1, 1).view(
+                batch_size, num_cams, 1, 1, 1, 4, 4)
+            points = (bda_mat @ points).squeeze(-1)
+        else:
+            points = points.squeeze(-1)
+
+        points_out = points[:, :, :, 0:1, :, :3]
+        points_valid_z = ((points[..., 2] > z_min) & (points[..., 2] < z_max))
+
+        return points_out, points_valid_z
+
     def get_geometry_collapsed(self, sensor2ego_mat, intrin_mat, ida_mat, bda_mat,
                                z_min=-5., z_max=3.):
         batch_size, num_cams, _, _ = sensor2ego_mat.shape #(1,6,4,4)
@@ -300,16 +329,49 @@ class RVTLSSFPN(BaseLSSFPN):
         # undo post-transformation
         # B x N x D x H x W x 3
         points = self.frustum #(70,32,48,4)
-        ida_mat = ida_mat.view(batch_size, num_cams, 1, 1, 1, 4, 4) #(2,6,4,4)->(2,6,1,1,1,4,4)
-        points = matrix_inverse(ida_mat).matmul(points.unsqueeze(-1)).double() #(2,6,1,1,1,4,4)*(70,32,48,4,1)->(2,6,70,32,48,4,1)
-        # cam_to_ego
-        points = torch.cat(
-            (points[:, :, :, :, :, :2] * points[:, :, :, :, :, 2:3],
-             points[:, :, :, :, :, 2:]), 5)
+        ##方式一：
+        # ida_mat = ida_mat.reshape(batch_size, num_cams, 1, 1, 1, 4, 4) #(2,6,4,4)->(2,6,1,1,1,4,4)
+        # points = matrix_inverse(ida_mat).matmul(points.unsqueeze(4)).double() #(2,6,1,1,1,4,4)*(70,32,48,4,1)->(2,6,70,32,48,4,1)
+        ## 方式2：
+        # ida_mat = ida_mat.reshape(batch_size*num_cams, 1, 4, 4)
+        # points = points.unsqueeze(4).reshape(-1, 4,1)
+        # points = matrix_inverse(ida_mat).matmul(points)
+        # points = points.reshape(1,5,70,32,48,4,1).double()
+        ## 方式3
+        mul_bs = 10  # 每次处理的深度层数（例如 10 个深度层）
+        # 1. 计算 ida_mat 的逆矩阵
+        ida_mat_inv = matrix_inverse(ida_mat)
+        # 2. 结果容器
+        points_transformed_batches = []
+        # 3. 按照 mul_bs 逐批处理 points
+        for i in range(0, points.shape[0], mul_bs):
+            # 获取当前批次的 points，形状为 [mul_bs, 32, 48, 4]
+            points_batch = points[i:i + mul_bs]
+            # 使用 ida_mat_inv 对 points_batch 进行变换
+            points_transformed_batch = torch.matmul(
+                ida_mat_inv.reshape(batch_size*num_cams, 1, 4, 4),
+                points_batch.unsqueeze(4).reshape(-1, 4, 1)
+            )
+            points_transformed_batch  = torch.cat((points_transformed_batch[:,:,:2] * points_transformed_batch[:,:,2:3],\
+                points_transformed_batch[:,:,2:]), 2) 
+            # 恢复原始形状 [1, 5, mul_bs, 32, 48, 4, 1]
+            points_transformed_batch = points_transformed_batch.view(batch_size, 5, mul_bs, 32, 48, 4, 1)
+            # 将每个批次的结果添加到列表中
+            points_transformed_batches.append(points_transformed_batch)
+        # 4. 将所有批次的结果拼接起来
+        points = torch.cat(points_transformed_batches, dim=2).double()  # 在深度维度上拼接
+        
+        # # cam_to_ego
+        # points = torch.cat(
+        #     (points[:, :, :, :, :, :2] * points[:, :, :, :, :, 2:3],
+        #      points[:, :, :, :, :, 2:]), 5)
 
         combine = sensor2ego_mat.matmul(matrix_inverse(intrin_mat)).double() #(2,6,4,4)
-        points = combine.view(batch_size, num_cams, 1, 1, 1, 4,
-                              4).matmul(points).half() #(2,6,1,1,1,4,4)*(2,6,70,32,48,4,1)->(2,6,70,32,48,4,1)
+        c1 = combine.unsqueeze(2).unsqueeze(3).unsqueeze(4).expand(1,5,70,32,48,4,4)
+        points = c1.reshape(-1, 4, 4).matmul(points.reshape(-1, 4, 1))
+        points = points.view(-1,5,70,32,48,4,1)
+        # combine = combine.unsqueeze(2).unsqueeze(3).unsqueeze(4)
+        # points = combine.matmul(points).to(torch.float32) #(2,6,1,1,1,4,4)*(2,6,70,32,48,4,1)->(2,6,70,32,48,4,1)
         if bda_mat is not None:
             bda_mat = bda_mat.unsqueeze(1).repeat(1, num_cams, 1, 1).view(
                 batch_size, num_cams, 1, 1, 1, 4, 4)
@@ -318,7 +380,8 @@ class RVTLSSFPN(BaseLSSFPN):
             points = points.squeeze(-1)
 
         points_out = points[:, :, :, 0:1, :, :3] #(2,6,70,32,48,4)->(2,6,70,1,48,3)
-        points_valid_z = ((points[..., 2] > z_min) & (points[..., 2] < z_max)) #(2,6,70,16,44)
+        points_z = points[..., 2]
+        points_valid_z = ((points_z > z_min) & (points_z < z_max)).to(torch.int32) #(2,6,70,16,44)
 
         return points_out, points_valid_z
 
@@ -449,11 +512,11 @@ class RVTLSSFPN(BaseLSSFPN):
         pts_context = self._split_batch_cam(pts_context, num_cams=num_cams) #(10,80,70,44)->(2,5,80,70,48)
         pts_context = pts_context.unsqueeze(-2).permute(0, 1, 3, 4, 5, 2).contiguous() #(2,6,70,1,44,80)
 
-        fused_context = torch.cat([img_context, pts_context], dim=-1) #（2,6,70,1,44,160）
+        fused_context = torch.cat([img_context, pts_context], dim=-1) #（2,5,70,1,44,160）
 
         geom_xyz = ((geom_xyz - (self.voxel_coord - self.voxel_size / 2.0)) /
                     self.voxel_size).int()
-        geom_xyz[..., 2] = 0  # collapse z-axis
+        geom_xyz[..., 2] = 0  # collapse z-axis, (2,5,70,1,48,3)
         if self.export_onnx:
             return geom_xyz, fused_context.contiguous()
         
@@ -468,7 +531,7 @@ class RVTLSSFPN(BaseLSSFPN):
 
         if return_depth:
             return feature_map.contiguous(), depth_feature[:, :self.depth_channels].softmax(1)
-        return feature_map.contiguous()
+        return feature_map.contiguous() # (2,160,128,128)
 
     def forward(self,
                 sweep_imgs,

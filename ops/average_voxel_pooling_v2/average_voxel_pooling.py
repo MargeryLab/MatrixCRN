@@ -69,6 +69,12 @@ class AverageVoxelPooling(Function):
         return output_features.permute(0, 3, 1, 2), output_num.permute(0, 3, 1, 2)
 
     @staticmethod
+    def symbolic(g, geom_xyz: torch.Tensor, input_features: torch.Tensor,
+                input_pos: torch.Tensor, voxel_num: torch.Tensor):
+        return g.op('custom_domain::AverageVoxelPooling', geom_xyz, input_features,
+                input_pos, voxel_num)
+    
+    @staticmethod
     def backward(ctx, grad_output_features, output_num):
         (grad_input_features, pos_memo) = ctx.saved_tensors
         kept = (pos_memo != -1)[..., 0]
