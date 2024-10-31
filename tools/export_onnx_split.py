@@ -12,12 +12,12 @@ from layers.modules.multimodal_deformable_cross_attention import DeformableCross
 from argparse import ArgumentParser
 
 from exps.base_exp import BEVDepthLightningModel
-from ptq_bev import quantize_net, fuse_conv_bn
+# from ptq_bev import quantize_net, fuse_conv_bn
 
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 MAX = None
-NUM_SWEEPS = 1
+NUM_SWEEPS = 4
 
 class no_jit_trace:
     def __enter__(self):
@@ -214,7 +214,6 @@ class TRTModel_post(nn.Module):
         
     def forward(self, feats):
         fused = self.model.fuser(feats)
-        # preds = self.model.head(fused)
         preds = self.head(fused)
         return preds # length = 10*6
 
@@ -306,6 +305,7 @@ def run_cli(model_class=BEVDepthLightningModel,
         post_inputs = (torch.rand(1, 1, fused_context_channel, voxel_num[0], voxel_num[1]).cuda())
         # "heatmap", "rotation", "height", "dim", "vel", "reg"
         output_names_post = [f'output_{j}' for j in range(6 * len(model.head.task_heads))]
+        trtModel_post(torch.rand(1, 1, fused_context_channel, voxel_num[0], voxel_num[1]).cuda())
         torch.onnx.export(
                     trtModel_post,
                     post_inputs,
@@ -313,7 +313,7 @@ def run_cli(model_class=BEVDepthLightningModel,
                     dynamic_axes = {'fused_context':{1: 'num_sweeps'}},
                     opset_version=13,
                     input_names=['fused_context',],
-                    do_constant_folding=True,
+                    do_constant_folding=False,
                     # enable_onnx_checker=False,
                     # operator_export_type=OperatorExportTypes.ONNX_FALLTHROUGH,ZZz
                     output_names=output_names_post

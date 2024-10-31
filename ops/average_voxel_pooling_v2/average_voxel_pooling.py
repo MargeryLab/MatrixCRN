@@ -72,7 +72,7 @@ class AverageVoxelPooling(Function):
     def symbolic(g, geom_xyz: torch.Tensor, input_features: torch.Tensor,
                 input_pos: torch.Tensor, voxel_num: torch.Tensor):
         return g.op('custom_domain::AverageVoxelPooling', geom_xyz, input_features,
-                input_pos, voxel_num)
+                input_pos, voxel_num, outputs=2)
     
     @staticmethod
     def backward(ctx, grad_output_features, output_num):

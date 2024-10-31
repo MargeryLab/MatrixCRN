@@ -275,7 +275,7 @@ def run_cli(model_class=BEVDepthLightningModel,
             input_names=["sweep_imgs", "sensor2ego_mats", "intrin_mats", "ida_mats", "voxels", "N_points", "coords"],
             output_names=[f'output_{j}' for j in range(6 * len(model.head.task_heads))],
             # dynamic_axes=dynamic_axes,
-            opset_version=13,
+            opset_version=15,
             do_constant_folding=True
         )
         print(f"{merget_onnx_path} has saved.")

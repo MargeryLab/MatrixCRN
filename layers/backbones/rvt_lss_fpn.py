@@ -295,21 +295,21 @@ class RVTLSSFPN(BaseLSSFPN):
     
     def get_geometry_collapsed_raw(self, sensor2ego_mat, intrin_mat, ida_mat, bda_mat,
                                z_min=-5., z_max=3.):
-        batch_size, num_cams, _, _ = sensor2ego_mat.shape
+        batch_size, num_cams, _, _ = sensor2ego_mat.shape #(1,6,4,4)
 
         # undo post-transformation
         # B x N x D x H x W x 3
-        points = self.frustum
-        ida_mat = ida_mat.view(batch_size, num_cams, 1, 1, 1, 4, 4)
-        points = ida_mat.inverse().matmul(points.unsqueeze(-1)).double()
+        points = self.frustum #(70,32,48,4)
+        ida_mat = ida_mat.view(batch_size, num_cams, 1, 1, 1, 4, 4) #(2,6,4,4)->(2,6,1,1,1,4,4)
+        points = matrix_inverse(ida_mat).matmul(points.unsqueeze(4)).double() #(2,6,1,1,1,4,4)*(70,32,48,4,1)->(2,6,70,32,48,4,1)
         # cam_to_ego
         points = torch.cat(
             (points[:, :, :, :, :, :2] * points[:, :, :, :, :, 2:3],
              points[:, :, :, :, :, 2:]), 5)
 
-        combine = sensor2ego_mat.matmul(torch.inverse(intrin_mat)).double()
+        combine = sensor2ego_mat.matmul(matrix_inverse(intrin_mat)).double() #(2,6,4,4)
         points = combine.view(batch_size, num_cams, 1, 1, 1, 4,
-                              4).matmul(points).half()
+                              4).matmul(points).half() #(2,6,1,1,1,4,4)*(2,6,70,32,48,4,1)->(2,6,70,32,48,4,1)
         if bda_mat is not None:
             bda_mat = bda_mat.unsqueeze(1).repeat(1, num_cams, 1, 1).view(
                 batch_size, num_cams, 1, 1, 1, 4, 4)
@@ -317,8 +317,8 @@ class RVTLSSFPN(BaseLSSFPN):
         else:
             points = points.squeeze(-1)
 
-        points_out = points[:, :, :, 0:1, :, :3]
-        points_valid_z = ((points[..., 2] > z_min) & (points[..., 2] < z_max))
+        points_out = points[:, :, :, 0:1, :, :3] #(2,6,70,32,48,4)->(2,6,70,1,48,3)
+        points_valid_z = ((points[..., 2] > z_min) & (points[..., 2] < z_max)).to(torch.int32)  #(2,6,70,16,44)
 
         return points_out, points_valid_z
 

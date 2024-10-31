@@ -43,8 +43,8 @@ def matrix_inverse(x):
             last two dimensions as matrices.")
 
 def _invert_square_matrix(x):
-    if x.size(0) != x.size(1):
-        raise ValueError("Input must be a square matrix.")
+    # if x.size(0) != x.size(1):
+    #     raise ValueError("Input must be a square matrix.")
 
     n = x.size(0)
     identity = torch.eye(n, device=x.device)
